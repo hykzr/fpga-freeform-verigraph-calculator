@@ -22,7 +22,15 @@
 
 module clock_devider(
     input clock,
-    output clock_6hz
+    output reg clk6p25m = 0
     );
-    
+    reg [2:0] counter = 0;
+    always @(posedge clock) begin
+        if (counter == 3'd7) begin
+            clk6p25m <= ~clk6p25m; // toggle every 8 cycles
+            counter <= 3'd0;
+        end else begin
+            counter <= counter + 1'b1;
+        end
+    end
 endmodule
