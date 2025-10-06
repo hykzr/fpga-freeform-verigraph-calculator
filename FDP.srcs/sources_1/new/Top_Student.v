@@ -70,14 +70,9 @@ module Top_Student (
 
   display_core u_disp(
                  .clk_fast(clk),
-                 .clk_25M(clk_25M),
                  .clk_6p25M(clk_6p25M),
-                 .result(result),
-                 .operand_a(a),
-                 .operand_b(b),
-                 .op_sel(op_sel),
-                 .carry_flag(carry),
-                 .overflow_flag(overflow),
+                 .result(result [4:0]),
+                 .result_valid(done),
                  .led(led),
                  .seg(seg),
                  .an(an),
