@@ -50,6 +50,12 @@ vivado.hw/
 vivado.ip_user_files/
 vivado.runs/
 vivado.sim/
+FDP.cache/
+FDP.hw/
+FDP.ip_user_files/
+FDP.runs/
+FDP.sim/
+FDP.ip_user_files
 
 ###### for Xilinx Vivado|ISE
 .Xil/
