@@ -12,6 +12,7 @@
 module Top_Student (
     input clk,
     input btnL, btnU, btnD, btnR, btnC,
+    input RsRx, RsTx,
     input [15:0] sw,
     output [15:0] led,
     output [7:0] JA,
@@ -78,4 +79,10 @@ module Top_Student (
                  .an(an),
                  .JA(JA)
                );
+  uart u_uart(
+         .clk(clk),
+         .rst(btnC),
+         .rx(RsRx),
+         .tx(RsTx)
+       );
 endmodule

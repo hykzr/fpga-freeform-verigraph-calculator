@@ -54,21 +54,15 @@ module clock_divider(
     output wire clk_1k
   );
   // 25 MHz
-  clock_div #(.INPUT_FREQ(100_000_000),.OUTPUT_FREQ(25_000_000))
+  clock_div #(.OUTPUT_FREQ(25_000_000))
             div25 (.clk_in(clk100M),.clk_out(clk_25M));
   // 6.25 MHz
-  clock_div #(
-              .INPUT_FREQ(100_000_000),
-              .OUTPUT_FREQ(6_250_000)
-            ) div6p25 (
+  clock_div #(.OUTPUT_FREQ(6_250_000)) div6p25 (
               .clk_in(clk100M),
               .clk_out(clk_6p25M)
             );
   // 1 kHz
-  clock_div #(
-              .INPUT_FREQ(100_000_000),
-              .OUTPUT_FREQ(1_000)
-            ) div1k (
+  clock_div #(.OUTPUT_FREQ(1_000)) div1k (
               .clk_in(clk100M),
               .clk_out(clk_1k)
             );

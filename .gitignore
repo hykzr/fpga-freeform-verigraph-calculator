@@ -5,7 +5,8 @@
 ##  Usage      : just rename or add contain to .gitignore                              ##
 ##  License    : MIT                                                                   ##
 #########################################################################################
-
+*.xpr
+archive_project_summary.txt
 ## log files
 *.log
 *.jou
@@ -74,7 +75,6 @@ xvlog.*
 *.hw
 *.backup.*
 *.debug
-FDP.xpr
 
 ## checkpoint files
 *.dcp

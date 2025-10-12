@@ -32,50 +32,47 @@ module input_core(
     output reg        valid,      // rising edge = evaluate
     output reg        reset_req,  // soft reset pulse
     output reg [2:0]  mode        // calculator mode bits
-);
-    //--------------------------------------------------
-    // Debounce button signals (1 ms sampling)
-    //--------------------------------------------------
-    reg [4:0] btn_sync;    // sampled values
-    reg [4:0] btn_prev;
-    wire [4:0] btn_raw = {btnC, btnR, btnD, btnU, btnL}; // packed order (for easy handling)
+  );
+  //--------------------------------------------------
+  // Debounce button signals (1 ms sampling)
+  //--------------------------------------------------
+  reg [4:0] btn_sync;    // sampled values
+  reg [4:0] btn_prev;
+  wire [4:0] btn_raw = {btnC, btnR, btnD, btnU, btnL}; // packed order (for easy handling)
 
-    always @(posedge clk_1k)
-    begin
-        btn_sync <= btn_raw;
-        btn_prev <= btn_sync;
-    end
+  always @(posedge clk_1k)
+  begin
+    btn_sync <= btn_raw;
+    btn_prev <= btn_sync;
+  end
 
-    // Rising-edge detect on each button
-    wire pressL = (btn_sync[0] & ~btn_prev[0]);
-    wire pressU = (btn_sync[1] & ~btn_prev[1]);
-    wire pressD = (btn_sync[2] & ~btn_prev[2]);
-    wire pressR = (btn_sync[3] & ~btn_prev[3]);
-    wire pressC = (btn_sync[4] & ~btn_prev[4]);
+  // Rising-edge detect on each button
+  wire pressL = (btn_sync[0] & ~btn_prev[0]);
+  wire pressU = (btn_sync[1] & ~btn_prev[1]);
+  wire pressD = (btn_sync[2] & ~btn_prev[2]);
+  wire pressR = (btn_sync[3] & ~btn_prev[3]);
+  wire pressC = (btn_sync[4] & ~btn_prev[4]);
 
-    //--------------------------------------------------
-    // Capture operands and control
-    //--------------------------------------------------
-    always @(posedge clk_fast)
-    begin
-        operand_a <= sw[3:0];
-        operand_b <= sw[7:4];
-        mode      <= sw[15:13];
+  //--------------------------------------------------
+  // Capture operands and control
+  //--------------------------------------------------
+  always @(posedge clk_fast)
+  begin
+    operand_a <= sw[3:0];
+    operand_b <= sw[7:4];
+    mode      <= sw[15:13];
 
-        // Operation selection
-        if (pressL)
-        op_sel <= 2'b00;  // ADD
-        else if (pressR)
-        op_sel <= 2'b01;  // SUB
+    // Operation selection
+    if (pressL)
+      op_sel <= 2'b00;  // ADD
+    else if (pressR)
+      op_sel <= 2'b01;  // SUB
 
-        // Evaluate signal (single-pulse valid)
-        valid <= pressC;
+    // Evaluate signal (single-pulse valid)
+    valid <= pressC;
 
-        // Reset request (soft reset pulse)
-        reset_req <= pressU;
-
-        // Optionally, you can assign down-button for special mode
-        // e.g., if (pressD) mode <= mode + 1;
-    end
+    // Reset request (soft reset pulse)
+    reset_req <= pressU;
+  end
 
 endmodule
