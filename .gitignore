@@ -12,7 +12,7 @@ archive_project_summary.txt
 *.jou
 *.rpt
 *.vdi
-
+*.out
 ## bitstream
 *.bit
 *.bin

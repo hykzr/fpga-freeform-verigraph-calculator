@@ -1,4 +1,5 @@
 `timescale 1ns / 1ps
+`include "constants.vh"
 
 //////////////////////////////////////////////////////////////////////////////////
 //
@@ -10,79 +11,97 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 module Top_Student (
-    input clk,
-    input btnL, btnU, btnD, btnR, btnC,
-    input RsRx, RsTx,
-    input [15:0] sw,
-    output [15:0] led,
-    output [7:0] JA,
-    output [7:0] JB,
-    output [7:0] JC,
-    output [6:0] seg,
-    output [3:0] an,
-    output dp
-  );
-  // Shared Clock
+    input  wire        clk,
+    input  wire        btnL,
+    btnU,
+    btnD,
+    btnR,
+    btnC,
+    input  wire [15:0] sw,
+    output wire [15:0] led,
+
+    // UART on JA header (separate pins for clarity)
+    output wire JA0_TX,  // connect to JA[0] in XDC
+    input  wire JA1_RX,  // connect to JA[1] in XDC
+
+    // PMODs / display
+    output wire [7:0] JB,
+    output wire [7:0] JC,
+
+    // 7-seg
+    output wire [6:0] seg,
+    output wire [3:0] an,
+    output wire       dp
+);
+  // ---------------- Clocks ----------------
   wire clk_25M, clk_6p25M, clk_1k;
-  clock_divider clkgen(
-                  .clk100M(clk),
-                  .clk_25M(clk_25M),
-                  .clk_6p25M(clk_6p25M),
-                  .clk_1k(clk_1k)
-                );
+  clock_divider clkgen (
+      .clk100M(clk),
+      .clk_25M(clk_25M),
+      .clk_6p25M(clk_6p25M),
+      .clk_1k(clk_1k)
+  );
 
-  wire [3:0] a, b;
-  wire [1:0] op_sel;
-  wire       valid, reset_req;
-  wire [2:0] mode;
+  // ---------------- Reset & Mode ----------------
+  wire        rst = sw[15];
+  wire        mode_out = sw[14];  // 0 = sender (input role), 1 = receiver (output role)
 
-  input_core u_in(
-               .clk_1k(clk_1k),
-               .clk_fast(clk),
-               .sw(sw),
-               .btnL(btnL),
-               .btnU(btnU),
-               .btnD(btnD),
-               .btnR(btnR),
-               .btnC(btnC),
-               .operand_a(a),
-               .operand_b(b),
-               .op_sel(op_sel),
-               .valid(valid),
-               .reset_req(reset_req),
-               .mode(mode)
-             );
+  // ---------------- INPUT ROLE (sender) ----------------
+  wire [ 7:0] oled_bus_in;
+  wire        tx_from_input;
+  wire [15:0] led_input_dbg;
 
-  wire [7:0] result;
-  wire carry, overflow, done;
+  localparam BAUD_RATE = 9600;
 
-  calc_core u_calc(
-              .clk(clk),
-              .operand_a(a),
-              .operand_b(b),
-              .op_sel(op_sel),
-              .valid(valid),
-              .reset(reset_req),
-              .result(result),
-              .carry_flag(carry),
-              .overflow_flag(overflow),
-              .done(done)
-            );
+  student_input #(
+      .CLK_HZ(100_000_000),
+      .BUF_DEPTH(32),
+      .BAUD_RATE(BAUD_RATE),
+      .MAX_DATA(32)
+  ) U_INPUT (
+      .clk(clk),
+      .rst(rst),
+      .btnU(btnU),
+      .btnD(btnD),
+      .btnL(btnL),
+      .btnR(btnR),
+      .btnC(btnC),
+      .clk_pix(clk_6p25M),
+      .oled_out(oled_bus_in),
+      .tx(tx_from_input),
+      .debug_led(led_input_dbg)
+  );
 
-  display_core u_disp(
-                 .clk_fast(clk),
-                 .clk_6p25M(clk_6p25M),
-                 .result(result [4:0]),
-                 .result_valid(done),
-                 .led(led),
-                 .seg(seg),
-                 .an(an),
-                 .JA(JA)
-               );
-  uart u_uart(
-         .clk(clk),
-         .rst(btnC),
-         .rx(RsRx),
-         .tx(RsTx)
-       );
+  // ---------------- OUTPUT ROLE (receiver) ----------------
+  wire [15:0] led_from_output;
+
+  student_output #(
+      .CLK_HZ(100_000_000),
+      .BAUD_RATE(BAUD_RATE),
+      .MAX_DATA(32)
+  ) U_OUTPUT (
+      .clk(clk),
+      .rst(rst),
+      .rx (JA1_RX),          // RX comes from JA1 pin
+      .led(led_from_output)
+  );
+
+  // ---------------- Routing / MUX ----------------
+  // UART TX pin: drive from sender in input mode; idle-high otherwise
+  assign JA0_TX = (mode_out == 1'b0) ? tx_from_input : 1'b1;
+
+  // OLED only in input role; otherwise drive low
+  assign JC[7:0] = (mode_out == 1'b0) ? oled_bus_in : 8'h00;
+
+  // LEDs: show sender debug vs receiver view
+  assign led = (mode_out == 1'b0) ? led_input_dbg : led_from_output;
+
+  // Unused PMOD JB idle
+  assign JB = 8'h00;
+
+  // 7-seg off
+  assign seg = 7'b111_1111;
+  assign an = 4'b1111;
+  assign dp = 1'b1;
+
 endmodule
