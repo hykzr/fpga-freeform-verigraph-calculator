@@ -77,7 +77,7 @@ module mapper_plot_points (
     input wire signed [31:0] offset_y_q16_16,
 
     // streamed points (Q16.16)
-    input wire               start,
+    input wire               start,     // strobe: this (x,y) is valid this cycle
     input wire signed [31:0] x_q16_16,
     input wire signed [31:0] y_q16_16,
 
@@ -94,67 +94,104 @@ module mapper_plot_points (
   localparam integer CENTER_Y = (`DISP_H / 2);
   localparam integer VRAM_SIZE = (`DISP_W * `DISP_H);
 
-  // 1bpp framebuffer
-  reg               vram                   [0:VRAM_SIZE-1];
+  // Colors (RGB565)
+  localparam [15:0] COL_BG = 16'h0000;  // black
+  localparam [15:0] COL_AXES = 16'h07E0;  // green
+  localparam [15:0] COL_CURVE = 16'hFFFF;  // white
+  localparam [15:0] COL_ORIGIN = 16'hFFE0;  // yellow
+  localparam [15:0] COL_UNIT = 16'hF800;  // red
 
-  // temporaries (declared at module scope)
-  reg signed [31:0] dx_q16;
-  reg signed [31:0] dy_q16;
-  wire       [ 3:0] e_neg = -zoom_exp[3:0];
+  // 1bpp framebuffer for curve
+  reg vram[0:VRAM_SIZE-1];
 
-  reg signed [31:0] xs_q16;
-  reg signed [31:0] ys_q16;
-  reg signed [31:0] xs_cen_q16;
-  reg signed [31:0] ys_cen_q16;
+  // ---------- common helpers ----------
+  wire [3:0] e_neg = -zoom_exp[3:0];
 
-  integer           px;
-  integer           py;
-  integer           j;  // loop for clear
+  // map any world (wx, wy) to integer pixel (px, py)
+  // Using shifts only (zoom = 2^exp), then add screen center.
+  // Comb wires for the streamed sample
+  wire signed [31:0] dx_q16 = x_q16_16 - offset_x_q16_16;
+  wire signed [31:0] dy_q16 = y_q16_16 - offset_y_q16_16;
 
-  // write path
+  wire signed [31:0] xs_q16 = (zoom_exp >= 0) ? (dx_q16 <<< zoom_exp) : (dx_q16 >>> e_neg);
+  wire signed [31:0] ys_q16 = (zoom_exp >= 0) ? (dy_q16 <<< zoom_exp) : (dy_q16 >>> e_neg);
+
+  wire signed [31:0] xs_cen_q16 = xs_q16 + (CENTER_X <<< 16);
+  wire signed [31:0] ys_cen_q16 = (CENTER_Y <<< 16) - ys_q16;
+
+  wire signed [15:0] px_samp = xs_cen_q16 >>> 16;
+  wire signed [15:0] py_samp = ys_cen_q16 >>> 16;
+
+  wire inb_samp = (px_samp >= 0) && (px_samp < SCREEN_W) && (py_samp >= 0) && (py_samp < SCREEN_H);
+
+  // ---------- map origin (0,0) ----------
+  wire signed [31:0] dx_o_q16 = -offset_x_q16_16;  // 0 - offset_x
+  wire signed [31:0] dy_o_q16 = -offset_y_q16_16;  // 0 - offset_y
+  wire signed [31:0] xo_q16 = (zoom_exp >= 0) ? (dx_o_q16 <<< zoom_exp) : (dx_o_q16 >>> e_neg);
+  wire signed [31:0] yo_q16 = (zoom_exp >= 0) ? (dy_o_q16 <<< zoom_exp) : (dy_o_q16 >>> e_neg);
+  wire signed [31:0] xo_c_q16 = xo_q16 + (CENTER_X <<< 16);
+  wire signed [31:0] yo_c_q16 = (CENTER_Y <<< 16) - yo_q16;
+  wire signed [15:0] px_org = xo_c_q16 >>> 16;  // origin column
+  wire signed [15:0] py_org = yo_c_q16 >>> 16;  // origin row
+  wire px_org_in = (px_org >= 0) && (px_org < SCREEN_W);
+  wire py_org_in = (py_org >= 0) && (py_org < SCREEN_H);
+
+  // ---------- map unit point (4,0) ----------
+  wire signed [31:0] four_q16 = 32'sd4 <<< 16;
+  wire signed [31:0] dx_u_q16 = four_q16 - offset_x_q16_16;
+  wire signed [31:0] dy_u_q16 = -offset_y_q16_16;
+  wire signed [31:0] xu_q16 = (zoom_exp >= 0) ? (dx_u_q16 <<< zoom_exp) : (dx_u_q16 >>> e_neg);
+  wire signed [31:0] yu_q16 = (zoom_exp >= 0) ? (dy_u_q16 <<< zoom_exp) : (dy_u_q16 >>> e_neg);
+  wire signed [31:0] xu_c_q16 = xu_q16 + (CENTER_X <<< 16);
+  wire signed [31:0] yu_c_q16 = (CENTER_Y <<< 16) - yu_q16;
+  wire signed [15:0] px_unit = xu_c_q16 >>> 16;
+  wire signed [15:0] py_unit = yu_c_q16 >>> 16;
+  wire unit_inb = (px_unit >= 0) && (px_unit < SCREEN_W) && (py_unit >= 0) && (py_unit < SCREEN_H);
+
+  // ---------- write holdoff after clear ----------
+  reg [1:0] holdoff;
+  always @(posedge clk) begin
+    if (rst) holdoff <= 2'b00;
+    else if (clear_curves) holdoff <= 2'b11;  // mask writes for 2 cycles
+    else holdoff <= {1'b0, holdoff[1]};
+  end
+  wire we = start && inb_samp && (holdoff == 2'b00);
+
+  // ---------- VRAM write / clear ----------
+  integer j;
   always @(posedge clk) begin
     if (rst || clear_curves) begin
-      for (j = 0; j < VRAM_SIZE; j = j + 1) begin
-        vram[j] <= 1'b0;
-      end
-    end else begin
-      if (start) begin
-        // world delta
-        dx_q16 <= x_q16_16 - offset_x_q16_16;
-        dy_q16 <= y_q16_16 - offset_y_q16_16;
-
-        // scale by 2^exp using shifts (uniform zoom)
-        if (zoom_exp >= 0) begin
-          xs_q16 <= (dx_q16 <<< zoom_exp);
-          ys_q16 <= (dy_q16 <<< zoom_exp);
-        end else begin
-          xs_q16 <= (dx_q16 >>> e_neg);
-          ys_q16 <= (dy_q16 >>> e_neg);
-        end
-
-        // add screen center (in Q16.16)
-        xs_cen_q16 <= xs_q16 + `TO_Q16_16(CENTER_X);
-        ys_cen_q16 <= `TO_Q16_16(CENTER_Y) - ys_q16;
-
-        // to integer pixels
-        px <= xs_cen_q16 >>> 16;
-        py <= ys_cen_q16 >>> 16;
-
-        // set pixel
-        if (px >= 0 && px < SCREEN_W && py >= 0 && py < SCREEN_H) begin
-          vram[py*SCREEN_W+px] <= 1'b1;
-        end
-      end
+      for (j = 0; j < VRAM_SIZE; j = j + 1) vram[j] <= 1'b0;
+    end else if (we) begin
+      vram[py_samp*SCREEN_W+px_samp] <= 1'b1;
     end
   end
 
-  // read path (axes + vram)
-  wire [6:0] sx = pixel_index % SCREEN_W;
-  wire [5:0] sy = pixel_index / SCREEN_W;
-  wire       on_axes = (sy == (CENTER_Y[5:0])) || (sx == (CENTER_X[6:0]));
-  wire       on_curve = vram[sy*SCREEN_W+sx];
+  // ---------- read path (compose curve + moving axes + markers) ----------
+  wire [6:0] sx = pixel_index % SCREEN_W;  // column
+  wire [5:0] sy = pixel_index / SCREEN_W;  // row
 
-  assign pixel_colour = on_curve ? 16'hFFFF : on_axes ? 16'h07E0 : 16'h0000;
+  // moving world axes at origin
+  wire on_vaxis = px_org_in && (sx == px_org[6:0]);
+  wire on_haxis = py_org_in && (sy == py_org[5:0]);
+  wire on_axes = on_vaxis || on_haxis;
+
+  // origin dot (single pixel)
+  wire on_origin = px_org_in && py_org_in && (sx == px_org[6:0]) && (sy == py_org[5:0]);
+
+  // unit dot at (4,0)
+  wire on_unit = unit_inb && (sx == px_unit[6:0]) && (sy == py_unit[5:0]);
+
+  // curve pixel
+  wire on_curve = vram[sy*SCREEN_W+sx];
+
+  // priority: curve > origin > unit > axes > bg
+  assign pixel_colour =
+      on_curve  ? COL_CURVE  :
+      on_origin ? COL_ORIGIN :
+      on_unit   ? COL_UNIT   :
+      on_axes   ? COL_AXES   :
+                  COL_BG;
 
 endmodule
 
