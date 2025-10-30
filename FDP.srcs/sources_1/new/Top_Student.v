@@ -29,70 +29,56 @@ module Top_Student (
 );
   localparam BAUD_RATE = 115200;
   localparam MAX_DATA = 32;
-
+  wire rst = sw[15];
   // ---------------- Clocks ----------------
   wire clk_25M, clk_6p25M, clk_1k;
-
-  wire rst = sw[15];
-  wire kb_select = sw[0];
-
   clock_divider clkgen (
       .clk100M(clk),
       .clk_25M(clk_25M),
       .clk_6p25M(clk_6p25M),
       .clk_1k(clk_1k)
   );
+  //   wire input_rx, input_tx, compute_rx, compute_tx;
+  //   assign input_rx   = compute_tx;
+  //   assign compute_rx = input_tx;
+  //   wire kb_select = sw[0];
+  //   wire [15:0] debug_led_input, debug_led_output;
+  //   student_input #(
+  //       .CLK_HZ(100_000_000),
+  //       .BAUD_RATE(BAUD_RATE),
+  //       .MAX_DATA(MAX_DATA)
+  //   ) U_INPUT (
+  //       .clk(clk),
+  //       .rst(rst),
+  //       .kb_sel(kb_select),
+  //       .btnU(btnU),
+  //       .btnD(btnD),
+  //       .btnL(btnL),
+  //       .btnR(btnR),
+  //       .btnC(btnC),
+  //       .rx(input_rx),
+  //       .tx(input_tx),
+  //       .clk_pix(clk_6p25M),
+  //       .oled_keypad_out(JC[7:0]),
+  //       .oled_text_out(JB[7:0]),
+  //       .debug_led(debug_led_input)
+  //   );
 
-  // ---------------- Existing UART loopback between input/compute ----------------
-  wire input_rx, input_tx, compute_rx, compute_tx;
-  assign input_rx   = compute_tx;
-  assign compute_rx = input_tx;
+  //   student_compute #(
+  //       .CLK_HZ(100_000_000),
+  //       .BAUD_RATE(BAUD_RATE),
+  //       .MAX_DATA(MAX_DATA)
+  //   ) U_OUTPUT (
+  //       .clk(clk),
+  //       .rst(rst),
+  //       .rx(compute_rx),
+  //       .tx(compute_tx),
+  //       .debug_led(debug_led_output)
+  //   );
+  // assign led = debug_led_input;
 
-  wire [15:0] debug_led_input, debug_led_output;
 
-  // ---------------- Your existing modules (UNCHANGED) ----------------
-  student_input #(
-      .CLK_HZ(100_000_000),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA(MAX_DATA)
-  ) U_INPUT (
-      .clk(clk),
-      .rst(rst),
-      .kb_sel(kb_select),
-      .btnU(btnU),
-      .btnD(btnD),
-      .btnL(btnL),
-      .btnR(btnR),
-      .btnC(btnC),
-      .rx(input_rx),
-      .tx(input_tx),
-      .clk_pix(clk_6p25M),
-      .oled_keypad_out(JC[7:0]),
-      .oled_text_out(JB[7:0]),
-      .debug_led(debug_led_input)
-  );
-
-//   student_compute #(
-//       .CLK_HZ(100_000_000),
-//       .BAUD_RATE(BAUD_RATE),
-//       .MAX_DATA(MAX_DATA)
-//   ) U_OUTPUT (
-//       .clk(clk),
-//       .rst(rst),
-//       .rx(compute_rx),
-//       .tx(compute_tx),
-//       .debug_led(debug_led_output)
-//   );
-
-  assign led = debug_led_input;  // keep your existing LED debug
-
-  // ===================================================================
-  //                       NEW: GRAPH DEMO PIPE
-  // ===================================================================
-
-  // --- Debounced navigation pulses from your helper (ACTIVE_LOW=0 on Basys3)
   wire up_p, down_p, left_p, right_p, confirm_p;
-
   nav_keys #(
       .CLK_HZ(100_000_000),
       .DB_MS(20),
@@ -116,8 +102,12 @@ module Top_Student (
 
   // Use sw[14] to choose mode: 0=pan (use arrows), 1=zoom (Up=zoom in, Down=zoom out)
   wire mode_zoom = sw[14];
-  wire zoom_in_p = mode_zoom ? up_p : 1'b0;
-  wire zoom_out_p = mode_zoom ? down_p : 1'b0;
+  wire move_up = up_p & ~mode_zoom;
+  wire move_down = down_p & ~mode_zoom;
+  wire move_left = left_p & ~mode_zoom;
+  wire move_right = right_p & ~mode_zoom;
+  wire zoom_in_p = mode_zoom & up_p;
+  wire zoom_out_p = mode_zoom & down_p;
   wire clear_pulse = confirm_p;  // BtnC pulse clears drawn points
 
   // OLED scan signals for the graph demo (SECOND OLED on JA)
@@ -128,14 +118,12 @@ module Top_Student (
   // Graph demo top (self-contained; uses dummy y = 2x + 1)
   graph_plotter_top_demo2x1 U_GRAPH (
       .clk_100(clk),
-      .clk_pix_6p25(clk_6p25M),
       .rst(rst),
 
-      .mode_zoom(mode_zoom),
-      .p_left(left_p),
-      .p_right(right_p),
-      .p_up(up_p),
-      .p_down(down_p),
+      .p_left(move_left),
+      .p_right(move_right),
+      .p_up(move_up),
+      .p_down(move_down),
       .p_zoom_in(zoom_in_p),
       .p_zoom_out(zoom_out_p),
       .p_clear_curves(clear_pulse),
