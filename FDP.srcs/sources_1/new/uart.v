@@ -28,12 +28,15 @@ module uart_tx #(
     input  wire       tx_start,  // 1-cycle pulse
     input  wire [7:0] tx_data,
     output reg        tx,        // idle-high
-    output reg        busy
+    output wire       busy_out
 );
   localparam integer CLKS_PER_BIT = CLK_FREQ / BAUD_RATE;
   reg [15:0] clk_count;
   reg [ 3:0] bit_index;
   reg [ 9:0] sh;
+  // the output busy should be also true if start is true, avoiding skipping bytes
+  reg        busy;
+  assign busy_out = busy | tx_start;
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -155,7 +158,7 @@ module proto_tx #(
       .tx_start(tx_start),
       .tx_data(tx_data),
       .tx(tx),
-      .busy(tx_busy)
+      .busy_out(tx_busy)
   );
 
   // FSM

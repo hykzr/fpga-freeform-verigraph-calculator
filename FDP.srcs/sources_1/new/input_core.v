@@ -1,213 +1,93 @@
 `timescale 1ns / 1ps
 `include "constants.vh"
-module text_uart_sync #(
-    parameter integer CLK_FREQ = 100_000_000,
-    parameter integer BAUD_RATE = 115200,
-    parameter integer BUF_DEPTH = 32,  // width of buffer_flat (bytes)
-    parameter integer MAX_DATA = 32  // max bytes we will send in one frame (<= 254 ideally)
+// text_buffer.v  — supports append (<=4 bytes) and replace (<=MAX_DATA)
+module text_buffer #(
+    parameter integer MAX_DATA = 32
 ) (
     input wire clk,
     input wire rst,
+    input wire clear,
 
-    // From input_core
-    input wire [8*BUF_DEPTH-1:0] buffer_flat,  // byte i at [8*i +: 8]
-    input wire [            7:0] buffer_len,   // widen to 8-bit at source (zero-extend)
-    input wire                   is_clear,     // 1-cycle strobe
+    // ===== append path (keypad emit) =====
+    input wire        append,      // 1-cycle pulse
+    input wire [ 2:0] append_len,  // 0..4
+    input wire [31:0] append_bus,  // byte i at [8*i +: 8], LSB-first
 
-    // UART out
-    output wire tx,
-    output wire busy  // proto busy (so top can know when link’s occupied)
+    // ===== Replace path (external bulk load) =====
+    input wire                  load,      // 1-cycle pulse
+    input wire [           7:0] load_len,  // 0..MAX_DATA
+    input wire [8*MAX_DATA-1:0] load_bus,  // byte i at [8*i +: 8], LSB-first
+
+    // ===== Outputs =====
+    output reg [           7:0] len,  // current used length
+    output reg [8*MAX_DATA-1:0] mem   // byte i at [8*i +: 8], LSB-first
 );
-
-  // ------------------------------------------------------------
-  // Internal snapshot & change detection
-  // ------------------------------------------------------------
-  // We keep a snapshot of the last-sent data (len + data[0..MAX_DATA-1]).
-  reg     [           7:0] prev_len;  // last N sent (capped at MAX_DATA)
-  reg     [8*MAX_DATA-1:0] prev_bus;  // last payload sent (only first prev_len bytes meaningful)
-
-  // Current capped length N = min(buffer_len, MAX_DATA)
-  wire    [           7:0] n_cur = (buffer_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : buffer_len;
-
-  // Build a capped/padded view of the buffer (first N bytes; rest zero)
-  reg     [8*MAX_DATA-1:0] cur_bus;
-  integer                  i;
-  always @* begin
-    // default zero
-    cur_bus = {8 * MAX_DATA{1'b0}};
-    // copy first N bytes from buffer_flat
-    for (i = 0; i < MAX_DATA; i = i + 1) begin
-      if (i < n_cur) cur_bus[8*i+:8] = buffer_flat[8*i+:8];
-      // else keep zero
-    end
-  end
-
-  // Has content changed vs the last sent snapshot?
-  wire                  changed = (n_cur != prev_len) || (cur_bus != prev_bus);
-
-  // Latch any activity while TX is busy
-  reg                   pending_text;
-  reg                   pending_clear;
-
-  // ------------------------------------------------------------
-  // proto_tx instance
-  // ------------------------------------------------------------
-  reg                   ptx_start;
-  reg  [           7:0] ptx_cmd;
-  reg  [           7:0] ptx_len;  // N (data count)
-  reg  [8*MAX_DATA-1:0] ptx_bus;
-  wire                  ptx_busy;
-
-  proto_tx #(
-      .CLK_FREQ (CLK_FREQ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) UTX (
-      .clk     (clk),
-      .rst     (rst),
-      .start   (ptx_start),
-      .cmd     (ptx_cmd),
-      .data_len(ptx_len),    // NOTE: this is N; proto sends LEN=(1+N)
-      .data_bus(ptx_bus),
-      .busy    (ptx_busy),
-      .tx      (tx)
-  );
-
-  assign busy = ptx_busy;
-
-  // ------------------------------------------------------------
-  // Small scheduler: CLEAR has priority over TEXT.
-  // Coalesce multiple edits while transmitter is busy.
-  // ------------------------------------------------------------
-  localparam ST_IDLE = 2'd0, ST_FIRE = 2'd1, ST_WAIT = 2'd2;
-  reg [1:0] st;
-
-  always @(posedge clk or posedge rst) begin
-    if (rst) begin
-      prev_len      <= 8'd0;
-      prev_bus      <= {8 * MAX_DATA{1'b0}};
-      pending_text  <= 1'b0;
-      pending_clear <= 1'b0;
-      ptx_start     <= 1'b0;
-      ptx_cmd       <= 8'h00;
-      ptx_len       <= 8'd0;
-      ptx_bus       <= {8 * MAX_DATA{1'b0}};
-      st            <= ST_IDLE;
-    end else begin
-      ptx_start <= 1'b0;  // default
-
-      // collect events
-      if (is_clear) pending_clear <= 1'b1;
-      if (changed) pending_text <= 1'b1;
-
-      case (st)
-        ST_IDLE: begin
-          // If TX line is free, emit pending events (CLEAR > TEXT)
-          if (!ptx_busy) begin
-            if (pending_clear) begin
-              // send CLEAR (no data)
-              ptx_cmd       <= `CMD_CLEAR;
-              ptx_len       <= 8'd0;
-              ptx_bus       <= {8 * MAX_DATA{1'b0}};
-              ptx_start     <= 1'b1;
-              st            <= ST_WAIT;
-              // consume CLEAR now; we'll also let TEXT send afterwards if still pending
-              pending_clear <= 1'b0;
-            end else if (pending_text) begin
-              // send TEXT (N bytes)
-              ptx_cmd      <= `CMD_TEXT;
-              ptx_len      <= n_cur;
-              ptx_bus      <= cur_bus;
-              ptx_start    <= 1'b1;
-              st           <= ST_WAIT;
-
-              // update snapshot NOW to latest contents (coalesce edits while busy)
-              prev_len     <= n_cur;
-              prev_bus     <= cur_bus;
-              pending_text <= 1'b0;
-            end
-          end
-        end
-
-        ST_WAIT: begin
-          // Wait until proto finishes the byte stream, then return to IDLE.
-          if (!ptx_busy) begin
-            st <= ST_IDLE;
-          end
-        end
-
-        default: st <= ST_IDLE;
-      endcase
-
-      // If we’re idle and TX free, also refresh snapshot when buffer changed
-      // (covers the case where we didn’t send yet because both pending flags were empty)
-      if (st == ST_IDLE && !ptx_busy && changed && !pending_text && !pending_clear) begin
-        prev_len <= n_cur;
-        prev_bus <= cur_bus;
-      end
-    end
-  end
-
-endmodule
-
-module text_buffer #(
-    parameter integer DEPTH = 32
-) (
-    input  wire               clk,
-    input  wire               rst,
-    input  wire               push,
-    input  wire [        7:0] din,
-    input  wire               clear,
-    output reg  [        5:0] len,
-    // NOTE: packed bus: byte i lives at mem[8*i +: 8]
-    output reg  [8*DEPTH-1:0] mem
-);
+  integer i, j;
+  wire [7:0] cap_len = (load_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : load_len;
+  wire [2:0] a_len_eff = (append_len > (MAX_DATA[7:0] - len)) ? (MAX_DATA[7:0] - len) : append_len;
 
   always @(posedge clk) begin
     if (rst || clear) begin
-      len <= 6'd0;
-      mem <= 0;  // fill with 0
-    end else begin
-      if (push && (len < DEPTH)) begin
-        // write next byte into packed bus slice
-        mem[8*len+:8] <= din;
-        len           <= len + 6'd1;
+      len <= 8'd0;
+      mem <= 0;
+    end else if (load) begin
+      // Replace: copy first cap_len bytes, clear the rest
+      for (i = 0; i < MAX_DATA; i = i + 1) begin
+        if (i < cap_len) mem[8*i+:8] <= load_bus[8*i+:8];
+        else mem[8*i+:8] <= 8'h00;
       end
+      len <= cap_len;
+    end else if (append && (append_len != 0) && (len < MAX_DATA[7:0])) begin
+      // Append: clamp to capacity
+      for (j = 0; j < 4; j = j + 1) begin
+        if (j < a_len_eff) mem[8*(len+j)+:8] <= append_bus[8*j+:8];
+      end
+      len <= len + a_len_eff;
     end
   end
 endmodule
 
 module input_core #(
-    parameter integer CLK_HZ             = 100_000_000,
-    parameter integer DEBOUNCE_MS        = 20,
-    parameter integer REPEAT_START_MS    = 500,
+    parameter integer CLK_HZ = 100_000_000,
+    parameter integer DEBOUNCE_MS = 20,
+    parameter integer REPEAT_START_MS = 500,
     parameter integer REPEAT_INTERVAL_MS = 60,
-    parameter integer BUF_DEPTH          = 32,
-    parameter integer OPERAND_W          = 32
+    parameter integer MAX_DATA = 32,
+    parameter integer FONT_SCALE = 2,
+    parameter [8*16-1:0] KB0_LAYOUT = 0,  // Change in student_input
+    parameter [8*16-1:0] KB1_LAYOUT = 0  // Change in student_input
 ) (
     input wire clk,
     input wire rst,
+
+    // raw buttons (debounced in-module)
     input wire btnU,
     input wire btnD,
     input wire btnL,
     input wire btnR,
     input wire btnC,
 
-    output wire [8*BUF_DEPTH-1:0] buffer_flat,  // pass-through of internal packed buffer
-    output wire [            5:0] buffer_len,
-    output wire [            2:0] op_code,
-    output wire [  OPERAND_W-1:0] op_a,
-    op_b,
-    output wire [            3:0] input_error,
-    output reg                    is_clear,
-    output reg                    is_equal,
-    output wire                   is_valid,
+    // select which keypad is active (e.g., SW[0])
+    input wire kb_sel,
 
-    output wire [2:0] focus_row,
-    output wire [2:0] focus_col
+    // external bulk load (replace buffer)
+    input wire                  buf_load,
+    input wire [           7:0] buf_load_len,
+    input wire [8*MAX_DATA-1:0] buf_load_bus,
+
+    // buffer out (to compute / text renderer)
+    output wire [8*MAX_DATA-1:0] buffer_flat,
+    output wire [           7:0] buffer_len,
+
+    // strobes (1-cycle pulses)
+    output wire is_clear,
+    output wire is_equal,
+
+    // === Keypad OLED pixel pipe (NEW) ===
+    input  wire       clk_pix,
+    output wire [7:0] oled_out
 );
-
-  // Buttons → pulses
+  // ---------- Buttons → pulses ----------
   wire up_p, down_p, left_p, right_p, confirm_p;
   nav_keys #(
       .CLK_HZ(CLK_HZ),
@@ -228,17 +108,22 @@ module input_core #(
       .right_p(right_p),
       .confirm_p(confirm_p)
   );
+  wire [7:0] oled_out_0;
+  wire [7:0] oled_out_1;
 
-  // Focus
-  wire [2:0] f_row, f_col;
-  assign focus_row = f_row;
-  assign focus_col = f_col;
+  wire [15:0] col0, col1;
+  wire ap0, ap1;  // append pulse
+  wire [2:0] al0, al1;  // append len
+  wire [31:0] ab0, ab1;  // append bus
+  wire cl0, cl1;  // clear pulse
+  wire eq0, eq1;  // equals pulse
 
-  wire select_pulse;
-  focus_grid #(
-      .ROWS(5),
-      .COLS(4)
-  ) nav (
+  keypad_widget #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (4),
+      .KB_LAYOUT (KB0_LAYOUT)
+  ) kb0 (
       .clk(clk),
       .rst(rst),
       .up_p(up_p),
@@ -246,125 +131,240 @@ module input_core #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
-      .row(f_row),
-      .col(f_col),
-      .select_pulse(select_pulse)
+      .clk_pix(clk_pix),
+      .oled_out(oled_out_0),
+      .tb_append(ap0),
+      .tb_append_len(al0),
+      .tb_append_bus(ab0),
+      .tb_clear(cl0),
+      .is_equal(eq0),
+      .focus_row(),
+      .focus_col()
   );
 
-  // Map key
-  wire [7:0] k_ascii;
-  wire k_is_eq, k_is_clr;
-  keypad_map km (
-      .row(f_row),
-      .col(f_col),
-      .ascii(k_ascii),
-      .is_equals(k_is_eq),
-      .is_clear(k_is_clr)
+  keypad_widget #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (4),
+      .KB_LAYOUT (KB1_LAYOUT)
+  ) kb1 (
+      .clk(clk),
+      .rst(rst),
+      .up_p(up_p),
+      .down_p(down_p),
+      .left_p(left_p),
+      .right_p(right_p),
+      .confirm_p(confirm_p),
+      .clk_pix(clk_pix),
+      .oled_out(oled_out_1),
+      .tb_append(ap1),
+      .tb_append_len(al1),
+      .tb_append_bus(ab1),
+      .tb_clear(cl1),
+      .is_equal(eq1),
+      .focus_row(),
+      .focus_col()
   );
+  wire        tb_append = kb_sel ? ap1 : ap0;
+  wire [ 2:0] tb_append_len = kb_sel ? al1 : al0;
+  wire [31:0] tb_append_bus = kb_sel ? ab1 : ab0;
+  wire        tb_clear_i = kb_sel ? cl1 : cl0;
+  assign is_equal = kb_sel ? eq1 : eq0;
+  assign is_clear = tb_clear_i;
+  assign oled_out = kb_sel ? oled_out_1 : oled_out_0;
 
-  // Buffer control
-  wire buf_push = select_pulse && (!k_is_eq) && (!k_is_clr);
-  wire [7:0] buf_din = k_ascii;
-  wire buf_clear = select_pulse && k_is_clr;
-
-  // Text buffer (packed bus)
-  wire [8*BUF_DEPTH-1:0] mem_bus;
   text_buffer #(
-      .DEPTH(BUF_DEPTH)
+      .MAX_DATA(MAX_DATA)
   ) tb (
-      .clk  (clk),
-      .rst  (rst),
-      .push (buf_push),
-      .din  (buf_din),
-      .clear(buf_clear),
-      .len  (buffer_len),
-      .mem  (mem_bus)
-  );
-  assign buffer_flat = mem_bus;
-
-  // Parse
-  wire [3:0] parse_errors;
-  wire has_a, has_b;
-  expr_parser #(
-      .DEPTH(BUF_DEPTH),
-      .W(OPERAND_W)
-  ) parser (
-      .mem_bus(mem_bus),
+      .clk(clk),
+      .rst(rst),
+      .clear(tb_clear_i),
+      .append(tb_append),
+      .append_len(tb_append_len),
+      .append_bus(tb_append_bus),
+      .load(buf_load),
+      .load_len(buf_load_len),
+      .load_bus(buf_load_bus),
       .len(buffer_len),
-      .op_code(op_code),
-      .op_a(op_a),
-      .op_b(op_b),
-      .has_a(has_a),
-      .has_b(has_b),
-      .errors(parse_errors)
+      .mem(buffer_flat)
   );
-  assign input_error = parse_errors;
-
-  // Strobes
-  always @(posedge clk) begin
-    if (rst) begin
-      is_clear <= 1'b0;
-      is_equal <= 1'b0;
-    end else begin
-      is_clear <= (select_pulse && k_is_clr);
-      is_equal <= (select_pulse && k_is_eq);
-    end
-  end
-
-  // Validity rule
-  wire empty_buf = (buffer_len == 0);
-  wire op_is_none = (op_code == `OP_NONE);
-  wire has_err = (input_error != `ERR_NONE);
-
-  assign is_valid =
-         is_equal &&
-         !empty_buf &&
-         !has_err &&
-         ( ( op_is_none && has_a && !has_b ) ||
-           ( !op_is_none && has_a && has_b ) );
 
 endmodule
 
-module student_input #(
-    parameter integer CLK_HZ = 100_000_000,
-    parameter integer BUF_DEPTH = 32,
+module compute_link #(
+    parameter integer CLK_HZ    = 100_000_000,
     parameter integer BAUD_RATE = 115200,
-    parameter integer MAX_DATA = 32
+    parameter integer MAX_DATA  = 32
 ) (
     input wire clk,
     input wire rst,
-    // Buttons
-    input wire btnU,
-    input wire btnD,
-    input wire btnL,
-    input wire btnR,
-    input wire btnC,
-    // Pixel clock + OLED
-    input wire clk_pix,
-    output wire [7:0] oled_out,
-    // UART TX out
+
+    // Triggers from input_core
+    input wire                  is_equal,  // 1-cycle
+    input wire                  is_clear,  // 1-cycle
+    input wire [           7:0] expr_len,  // 0..MAX_DATA
+    input wire [8*MAX_DATA-1:0] expr_bus,  // ASCII payload
+
+    // UART
+    input  wire rx,
     output wire tx,
-    // (optional) debug
+
+    // To text_buffer (bulk load of RESULT)
+    output reg                  load_buf,  // 1-cycle pulse
+    output reg [           7:0] load_len,
+    output reg [8*MAX_DATA-1:0] load_bus,
+
+    // optional status
+    output wire tx_busy,
+    output wire rx_frame_valid,
+    output wire rx_chk_ok
+);
+  // ---------------- TX ----------------
+  reg                   ptx_start;
+  reg  [           7:0] ptx_cmd;
+  reg  [           7:0] ptx_len;  // N
+  reg  [8*MAX_DATA-1:0] ptx_bus;
+  wire                  ptx_busy;
+
+  proto_tx #(
+      .CLK_FREQ (CLK_HZ),
+      .BAUD_RATE(BAUD_RATE),
+      .MAX_DATA (MAX_DATA)
+  ) TX (
+      .clk(clk),
+      .rst(rst),
+      .start(ptx_start),
+      .cmd(ptx_cmd),
+      .data_len(ptx_len),
+      .data_bus(ptx_bus),
+      .busy(ptx_busy),
+      .tx(tx)
+  );
+  assign tx_busy = ptx_busy;
+
+  // ---------------- RX ----------------
+  wire prx_valid, prx_chk;
+  wire [7:0] prx_cmd;
+  wire [7:0] prx_len;
+  wire [8*MAX_DATA-1:0] prx_bus;
+
+  proto_rx #(
+      .CLK_FREQ (CLK_HZ),
+      .BAUD_RATE(BAUD_RATE),
+      .MAX_DATA (MAX_DATA)
+  ) RX (
+      .clk(clk),
+      .rst(rst),
+      .rx(rx),
+      .frame_valid(prx_valid),
+      .chk_ok(prx_chk),
+      .cmd(prx_cmd),
+      .data_len(prx_len),
+      .data_bus(prx_bus)
+  );
+  assign rx_frame_valid = prx_valid;
+  assign rx_chk_ok      = prx_chk;
+
+  // ---------------- Scheduler ----------------
+  // Queue '=' and 'C' while TX is busy. CLEAR has priority.
+  reg pending_clear, pending_compute;
+
+  always @(posedge clk or posedge rst) begin
+    if (rst) begin
+      ptx_start       <= 1'b0;
+      ptx_cmd         <= 8'h00;
+      ptx_len         <= 8'd0;
+      ptx_bus         <= {8 * MAX_DATA{1'b0}};
+      pending_clear   <= 1'b0;
+      pending_compute <= 1'b0;
+      load_buf        <= 1'b0;
+      load_len        <= 8'd0;
+      load_bus        <= {8 * MAX_DATA{1'b0}};
+    end else begin
+      ptx_start <= 1'b0;
+      load_buf  <= 1'b0;
+
+      // latch triggers
+      if (is_clear) pending_clear <= 1'b1;
+      if (is_equal) pending_compute <= 1'b1;
+
+      // launch when free
+      if (!ptx_busy) begin
+        if (pending_clear) begin
+          ptx_cmd <= `CMD_CLEAR;
+          ptx_len <= 8'd0;
+          ptx_bus <= {8 * MAX_DATA{1'b0}};
+          ptx_start <= 1'b1;
+          pending_clear <= 1'b0;
+        end else if (pending_compute) begin
+          ptx_cmd <= `CMD_COMPUTE;
+          ptx_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
+          ptx_bus <= expr_bus;
+          ptx_start <= 1'b1;
+          pending_compute <= 1'b0;
+        end
+      end
+
+      // apply RESULT
+      if (prx_valid && prx_chk && (prx_cmd == `CMD_RESULT)) begin
+        load_len <= (prx_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : prx_len;
+        load_bus <= prx_bus;
+        load_buf <= 1'b1;
+      end
+    end
+  end
+endmodule
+
+module student_input #(
+    parameter integer CLK_HZ     = 100_000_000,
+    parameter integer BAUD_RATE  = 115200,
+    parameter integer MAX_DATA   = 32,
+    parameter integer FONT_SCALE = 2
+) (
+    input wire clk,
+    input wire rst,
+
+    input wire btnU,
+    btnD,
+    btnL,
+    btnR,
+    btnC,
+
+    input wire kb_sel,
+
+    input  wire rx,
+    output wire tx,
+
+    input  wire       clk_pix,          // 6.25 MHz
+    output wire [7:0] oled_keypad_out,
+    output wire [7:0] oled_text_out,
+
     output wire [15:0] debug_led
 );
-  wire [8*BUF_DEPTH-1:0] buf_flat;
-  wire [            5:0] buf_len6;
-  wire [            2:0] op_code;
-  wire [31:0] op_a, op_b;
-  wire [3:0] in_err;
-  wire is_clear, is_equal, is_valid;
-  wire [2:0] f_row, f_col;
-  reg  dbg1;
-  wire uart_out;
-  assign tx = uart_out;
+  localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
+  localparam [8*16-1:0] KB1_LAYOUT = {
+    `TAN_KEY, `COS_KEY, `SIN_KEY, "C", `SQRT_KEY, `LN_KEY, `LOG_KEY, `PI_KEY, "^&|~", ".)(e"
+  };
+
+  wire [8*MAX_DATA-1:0] buffer_flat;
+  wire [           7:0] buffer_len8;
+  wire is_clear, is_equal;
+
+  // external result load from compute_link
+  wire                  load_buf;
+  wire [           7:0] load_len;
+  wire [8*MAX_DATA-1:0] load_bus;
+
   input_core #(
       .CLK_HZ(CLK_HZ),
       .DEBOUNCE_MS(20),
       .REPEAT_START_MS(500),
       .REPEAT_INTERVAL_MS(60),
-      .BUF_DEPTH(BUF_DEPTH),
-      .OPERAND_W(32)
-  ) u_in (
+      .MAX_DATA(MAX_DATA),
+      .FONT_SCALE(1),
+      .KB0_LAYOUT(KB0_LAYOUT),
+      .KB1_LAYOUT(KB1_LAYOUT)
+  ) core (
       .clk(clk),
       .rst(rst),
       .btnU(btnU),
@@ -372,62 +372,63 @@ module student_input #(
       .btnL(btnL),
       .btnR(btnR),
       .btnC(btnC),
-      .buffer_flat(buf_flat),
-      .buffer_len(buf_len6),
-      .op_code(op_code),
-      .op_a(op_a),
-      .op_b(op_b),
-      .input_error(in_err),
+      .kb_sel(kb_sel),
+
+      .buf_load(load_buf),
+      .buf_load_len(load_len),
+      .buf_load_bus(load_bus),
+
+      .buffer_flat(buffer_flat),
+      .buffer_len(buffer_len8),
       .is_clear(is_clear),
       .is_equal(is_equal),
-      .is_valid(is_valid),
-      .focus_row(f_row),
-      .focus_col(f_col)
+
+      .clk_pix (clk_pix),
+      .oled_out(oled_keypad_out)
   );
 
-  render_keypad #(
-      .FONT_SCALE(2),
-      .GRID_ROWS (4),
-      .GRID_COLS (4),
-      .KB_LAYOUT ({"0C=+", "123-", "456*", "789/"})
-  ) u_out (
-      .clk_pix(clk_pix),
-      .rst(rst),
-      .focus_row(f_row),
-      .focus_col(f_col),
-      .oled_out(oled_out)
-  );
-
-  always @(negedge uart_out, posedge rst) begin
-    dbg1 = rst ? 0 : ~dbg1;
-  end
-
-  // Send whenever buffer changes or is cleared
-  wire [7:0] buf_len8 = {2'b00, buf_len6};
-  wire busy;
-
-  text_uart_sync #(
-      .CLK_FREQ (CLK_HZ),
+  // ---------- compute_link ----------
+  compute_link #(
+      .CLK_HZ(CLK_HZ),
       .BAUD_RATE(BAUD_RATE),
-      .BUF_DEPTH(BUF_DEPTH),
-      .MAX_DATA (MAX_DATA)
-  ) bridge (
+      .MAX_DATA(MAX_DATA)
+  ) link (
       .clk(clk),
       .rst(rst),
-      .buffer_flat(buf_flat),
-      .buffer_len(buf_len8),
+      .is_equal(is_equal),
       .is_clear(is_clear),
-      .tx(uart_out),
-      .busy(busy)  // unused
+      .expr_len(buffer_len8),
+      .expr_bus(buffer_flat),
+      .rx(rx),
+      .tx(tx),
+      .load_buf(load_buf),
+      .load_len(load_len),
+      .load_bus(load_bus),
+      .tx_busy(),
+      .rx_frame_valid(),
+      .rx_chk_ok()
   );
 
-  // Optional debug LED mapping (same as before)
-  assign debug_led[13:9] = buf_len6[4:0];
-  assign debug_led[8:6]  = op_code;
-  assign debug_led[5:3]  = in_err[2:0];
-  assign debug_led[2]    = is_valid;
+  // ---------- OLED #2: Text buffer ----------
+  wire [12:0] txt_pix_idx;
+  wire [15:0] txt_pix_col;
+
+  text_oled #(
+      .FONT_SCALE(FONT_SCALE),
+      .MAX_DATA  (MAX_DATA)
+  ) tgr (
+      .clk_pix(clk_pix),
+      .rst(rst),
+      .oled_out(oled_text_out),
+      .text_len(buffer_len8),
+      .text_bus(buffer_flat)
+  );
+
+  // ---------- debug LEDs ----------
+  assign debug_led[15]   = 1'b0;
+  assign debug_led[14:9] = buffer_len8[5:0];
+  assign debug_led[8]    = kb_sel;
+  assign debug_led[7:2]  = 6'b0;
   assign debug_led[1]    = is_clear;
   assign debug_led[0]    = is_equal;
-  assign debug_led[15]   = dbg1;
-  assign debug_led[14] = busy;
 endmodule

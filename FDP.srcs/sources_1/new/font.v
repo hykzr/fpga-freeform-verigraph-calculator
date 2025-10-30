@@ -1,7 +1,6 @@
-// font5x7_rom.v : returns 5x7 bitmap rows for ASCII in [0..127]
-// bit[4:0] of each row; bit4 is left-most pixel
-// font5x7_rom.v — Verilog-2001, 5x7 font rows, ASCII 8-bit
-// bits[4] is leftmost pixel in the 5-pixel row
+`timescale 1ns / 1ps
+`include "constants.vh"
+
 module font5x7_rom (
     input  wire [7:0] ascii,  // full 8-bit ASCII
     input  wire [2:0] row,    // 0..6
@@ -157,11 +156,11 @@ module font5x7_rom (
       "*": begin
         case (row)
           3'd0: bits = 5'b00000;
-          3'd1: bits = 5'b10101;
-          3'd2: bits = 5'b01110;
-          3'd3: bits = 5'b11111;
-          3'd4: bits = 5'b01110;
-          3'd5: bits = 5'b10101;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b01010;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b01010;
+          3'd5: bits = 5'b10001;
           3'd6: bits = 5'b00000;
           default: bits = 5'b00000;
         endcase
@@ -190,6 +189,30 @@ module font5x7_rom (
           default: bits = 5'b00000;
         endcase
       end
+      "A": begin
+        case (row)
+          3'd0: bits = 5'b01110;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b11111;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b10001;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "B": begin
+        case (row)
+          3'd0: bits = 5'b11110;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b11110;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b11110;
+          default: bits = 5'b00000;
+        endcase
+      end
       "C": begin
         case (row)
           3'd0: bits = 5'b01110;
@@ -202,15 +225,483 @@ module font5x7_rom (
           default: bits = 5'b00000;
         endcase
       end
-      " ": begin
+      "D": begin
+        case (row)
+          3'd0: bits = 5'b11110;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b11110;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "E": begin
+        case (row)
+          3'd0: bits = 5'b11111;
+          3'd1: bits = 5'b10000;
+          3'd2: bits = 5'b10000;
+          3'd3: bits = 5'b11110;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b10000;
+          3'd6: bits = 5'b11111;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "F": begin
+        case (row)
+          3'd0: bits = 5'b11111;
+          3'd1: bits = 5'b10000;
+          3'd2: bits = 5'b10000;
+          3'd3: bits = 5'b11110;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b10000;
+          3'd6: bits = 5'b10000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "a": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01110;
+          3'd2: bits = 5'b00001;
+          3'd3: bits = 5'b01111;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b01111;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "b": begin
+        case (row)
+          3'd0: bits = 5'b10000;
+          3'd1: bits = 5'b10000;
+          3'd2: bits = 5'b11110;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b11110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "c": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01110;
+          3'd2: bits = 5'b10000;
+          3'd3: bits = 5'b10000;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "d": begin
+        case (row)
+          3'd0: bits = 5'b00001;
+          3'd1: bits = 5'b00001;
+          3'd2: bits = 5'b01111;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b01111;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "e": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01110;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b11111;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "f": begin
+        case (row)
+          3'd0: bits = 5'b00110;
+          3'd1: bits = 5'b01001;
+          3'd2: bits = 5'b01000;
+          3'd3: bits = 5'b11100;
+          3'd4: bits = 5'b01000;
+          3'd5: bits = 5'b01000;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "g": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01111;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b01111;
+          3'd4: bits = 5'b00001;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "h": begin
+        case (row)
+          3'd0: bits = 5'b10000;
+          3'd1: bits = 5'b10000;
+          3'd2: bits = 5'b11110;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "i": begin
+        case (row)
+          3'd0: bits = 5'b00100;
+          3'd1: bits = 5'b00000;
+          3'd2: bits = 5'b01100;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b00100;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "j": begin
+        case (row)
+          3'd0: bits = 5'b00010;
+          3'd1: bits = 5'b00000;
+          3'd2: bits = 5'b00110;
+          3'd3: bits = 5'b00010;
+          3'd4: bits = 5'b00010;
+          3'd5: bits = 5'b10010;
+          3'd6: bits = 5'b01100;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "k": begin
+        case (row)
+          3'd0: bits = 5'b10000;
+          3'd1: bits = 5'b10010;
+          3'd2: bits = 5'b10100;
+          3'd3: bits = 5'b11000;
+          3'd4: bits = 5'b10100;
+          3'd5: bits = 5'b10010;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "l": begin
+        case (row)
+          3'd0: bits = 5'b01100;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b00100;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b00100;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "m": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b11010;
+          3'd2: bits = 5'b10101;
+          3'd3: bits = 5'b10101;
+          3'd4: bits = 5'b10101;
+          3'd5: bits = 5'b10101;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "n": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b11110;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "o": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01110;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10001;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "p": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b11110;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b11110;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b10000;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "q": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01111;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b01111;
+          3'd4: bits = 5'b00001;
+          3'd5: bits = 5'b00001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "r": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10110;
+          3'd2: bits = 5'b11001;
+          3'd3: bits = 5'b10000;
+          3'd4: bits = 5'b10000;
+          3'd5: bits = 5'b10000;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "s": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01111;
+          3'd2: bits = 5'b10000;
+          3'd3: bits = 5'b01110;
+          3'd4: bits = 5'b00001;
+          3'd5: bits = 5'b11110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "t": begin
+        case (row)
+          3'd0: bits = 5'b01000;
+          3'd1: bits = 5'b01000;
+          3'd2: bits = 5'b11100;
+          3'd3: bits = 5'b01000;
+          3'd4: bits = 5'b01001;
+          3'd5: bits = 5'b00110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "u": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b10001;
+          3'd4: bits = 5'b10011;
+          3'd5: bits = 5'b01101;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "v": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b01010;
+          3'd4: bits = 5'b01010;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "w": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b10101;
+          3'd4: bits = 5'b11011;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "x": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b01010;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b01010;
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "y": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b10001;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b01111;
+          3'd4: bits = 5'b00001;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "z": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b11111;
+          3'd2: bits = 5'b00010;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b01000;
+          3'd5: bits = 5'b11111;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "(": begin
+        case (row)
+          3'd0: bits = 5'b00010;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b01000;
+          3'd3: bits = 5'b01000;
+          3'd4: bits = 5'b01000;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b00010;
+          default: bits = 5'b00000;
+        endcase
+      end
+      ")": begin
+        case (row)
+          3'd0: bits = 5'b01000;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b00010;
+          3'd3: bits = 5'b00010;
+          3'd4: bits = 5'b00010;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b01000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      ".": begin
         case (row)
           3'd0: bits = 5'b00000;
           3'd1: bits = 5'b00000;
           3'd2: bits = 5'b00000;
           3'd3: bits = 5'b00000;
           3'd4: bits = 5'b00000;
+          3'd5: bits = 5'b00110;
+          3'd6: bits = 5'b00110;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "<": begin
+        case (row)
+          3'd0: bits = 5'b00010;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b01000;
+          3'd3: bits = 5'b10000;
+          3'd4: bits = 5'b01000;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b00010;
+          default: bits = 5'b00000;
+        endcase
+      end
+      ">": begin
+        case (row)
+          3'd0: bits = 5'b01000;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b00010;
+          3'd3: bits = 5'b00001;
+          3'd4: bits = 5'b00010;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b01000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "^": begin
+        case (row)
+          3'd0: bits = 5'b00100;
+          3'd1: bits = 5'b01010;
+          3'd2: bits = 5'b10001;
+          3'd3: bits = 5'b00000;
+          3'd4: bits = 5'b00000;
           3'd5: bits = 5'b00000;
           3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "~": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b00000;
+          3'd2: bits = 5'b01000;
+          3'd3: bits = 5'b10101;
+          3'd4: bits = 5'b00010;
+          3'd5: bits = 5'b00000;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "&": begin
+        case (row)
+          3'd0: bits = 5'b00110;
+          3'd1: bits = 5'b01001;
+          3'd2: bits = 5'b00110;
+          3'd3: bits = 5'b01100;
+          3'd4: bits = 5'b10011;
+          3'd5: bits = 5'b10010;
+          3'd6: bits = 5'b01101;
+          default: bits = 5'b00000;
+        endcase
+      end
+      "|": begin
+        case (row)
+          3'd0: bits = 5'b00100;
+          3'd1: bits = 5'b00100;
+          3'd2: bits = 5'b00100;
+          3'd3: bits = 5'b00100;
+          3'd4: bits = 5'b00100;
+          3'd5: bits = 5'b00100;
+          3'd6: bits = 5'b00100;
+          default: bits = 5'b00000;
+        endcase
+      end
+      `PI_KEY: begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b11111;
+          3'd2: bits = 5'b01010;
+          3'd3: bits = 5'b01010;  // top bar
+          3'd4: bits = 5'b01010;  // legs
+          3'd5: bits = 5'b10001;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
+      `SQRT_KEY: begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b00011;
+          3'd2: bits = 5'b00010;
+          3'd3: bits = 5'b00010;
+          3'd4: bits = 5'b00100;
+          3'd5: bits = 5'b10100;
+          3'd6: bits = 5'b01000;
           default: bits = 5'b00000;
         endcase
       end

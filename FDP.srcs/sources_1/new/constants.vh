@@ -2,6 +2,14 @@
 `ifndef EE2026_CONSTANTS_VF
 `define EE2026_CONSTANTS_VF
 
+`define PI_KEY     8'd129
+`define SQRT_KEY   8'd130
+`define SIN_KEY    8'd131
+`define COS_KEY    8'd132
+`define TAN_KEY    8'd133
+`define LN_KEY     8'd134
+`define LOG_KEY    8'd135
+
 // ---- Display geometry (SSD1331/96x64) ----
 `define DISP_W 96
 `define DISP_H 64
@@ -30,6 +38,12 @@
 // ---- Protocol CMDs (on-wire) ----
 `define CMD_TEXT  8'h10   // set/render text payload
 `define CMD_CLEAR 8'h11   // clear remote display/buffer
+`define CMD_COMPUTE 8'h20   // payload: ASCII expression
+`define CMD_RESULT  8'h21   // payload: ASCII numeric result (for simple render)
 `define START_BYTE  8'hAA   // set/render text payload
 `define END_BYTE 8'h55   // clear remote display/buffer
 `endif // EE2026_CONSTANTS_VF
+
+`define Q16_16_ONE   32'sd65536
+`define TO_Q16_16(x) ( (x) <<< 16 )
+`define FROM_Q16_16(x) ( (x) >>> 16 )

@@ -67,17 +67,26 @@ module text_uart_sink #(
   end
 endmodule
 
-// student_output.v
 module student_output #(
-    parameter integer CLK_HZ = 100_000_000,
-    parameter integer BAUD_RATE = 115200,
-    parameter integer MAX_DATA = 32
+    parameter integer CLK_HZ     = 100_000_000,
+    parameter integer BAUD_RATE  = 115200,
+    parameter integer MAX_DATA   = 32,
+    parameter integer FONT_SCALE = 2,            // pass through to renderer
+    parameter integer H_SP       = 2,
+    parameter integer V_SP       = 2
 ) (
-    input  wire        clk,
-    input  wire        rst,
-    input  wire        rx,   // UART RX pin
-    output wire [15:0] led   // simple visualization on LEDs
+    input wire clk,
+    input wire rst,
+    input wire rx,   // UART RX pin
+
+    // OLED
+    input  wire       clk_pix,  // 6.25 MHz pixel clock
+    output wire [7:0] oled_out
+
+    // (add optional debug LED outputs here if you still want them)
 );
+
+  // ---- Receive & hold latest text ----
   wire text_valid, cleared, chk_ok, fr_valid;
   wire [7:0] text_len;
   wire [8*MAX_DATA-1:0] text_bus;
@@ -98,32 +107,29 @@ module student_output #(
       .frame_valid_last(fr_valid)
   );
 
-  wire [7:0] first_byte = text_bus[7:0];
+  // ---- Per-pixel renderer ----
+  wire [12:0] pixel_index;
+  wire [15:0] pixel_color;
 
-  wire rx_tog, fr_valid_tog, chk_ok_tog;
+  text_grid_renderer #(
+      .FONT_SCALE(FONT_SCALE),
+      .H_SP(H_SP),
+      .V_SP(V_SP),
+      .MAX_DATA(MAX_DATA)
+  ) rend (
+      .pixel_index(pixel_index),
+      .text_len(text_len),
+      .text_bus(text_bus),
+      .pixel_color(pixel_color)
+  );
 
-  toggle_on_pulse tfr (
-      .clk(clk),
-      .rst(rst),
-      .pulse_in(fr_valid),
-      .toggle_out(fr_valid_tog)
+  // ---- OLED driver ----
+  oled u_oled (
+      .clk_6p25m  (clk_pix),
+      .rst        (rst),
+      .pixel_color(pixel_color),
+      .oled_out   (oled_out),
+      .pixel_index(pixel_index)
   );
-  toggle_on_pulse tchk (
-      .clk(clk),
-      .rst(rst),
-      .pulse_in(chk_ok),
-      .toggle_out(chk_ok_tog)
-  );
-  toggle_on_pulse trx (
-      .clk(clk),
-      .rst(rst),
-      .pulse_in(rx),
-      .toggle_out(rx_tog)
-  );
-  assign led[15] = fr_valid_tog;
-  assign led[14] = chk_ok_tog;
-  assign led[13] = rx_tog;
-  assign led[12:6] = text_len[6:0];
-  assign led[5:1] = first_byte[4:0];
-  assign led[0] = 1'b1;
+
 endmodule
