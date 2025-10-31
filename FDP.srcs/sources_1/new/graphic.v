@@ -30,17 +30,27 @@ module viewport_ctrl (
   // sequential state updates
   always @(posedge clk) begin
     if (rst) begin
-      zoom_exp        <= 4'sd0;  // 2^0 = 1x
+      zoom_exp        <= 4'sd0;  // 1x
       offset_x_q16_16 <= 32'sd0;
       offset_y_q16_16 <= 32'sd0;
     end else begin
-      // zoom (uniform)
-      if (pulse_zoom_in && (zoom_exp < 4'sd4)) zoom_exp <= zoom_exp + 4'sd1;  // up to 16x
-      if (pulse_zoom_out && (zoom_exp > -4'sd3)) zoom_exp <= zoom_exp - 4'sd1;  // down to 0.125x
-      if (pulse_left) offset_x_q16_16 <= offset_x_q16_16 - pan_step_world_q16;
-      if (pulse_right) offset_x_q16_16 <= offset_x_q16_16 + pan_step_world_q16;
-      if (pulse_up) offset_y_q16_16 <= offset_y_q16_16 + pan_step_world_q16;
-      if (pulse_down) offset_y_q16_16 <= offset_y_q16_16 - pan_step_world_q16;
+      // Prioritise zoom this cycle (don't pan on same tick as zoom)
+      if (pulse_zoom_in && (zoom_exp < 4'sd4) && !pulse_zoom_out) begin
+        zoom_exp        <= zoom_exp + 4'sd1;
+        // keep world origin's screen position fixed
+        offset_x_q16_16 <= offset_x_q16_16 >>> 1;  // divide by 2
+        offset_y_q16_16 <= offset_y_q16_16 >>> 1;
+      end else if (pulse_zoom_out && (zoom_exp > -4'sd3) && !pulse_zoom_in) begin
+        zoom_exp        <= zoom_exp - 4'sd1;
+        offset_x_q16_16 <= offset_x_q16_16 <<< 1;  // multiply by 2
+        offset_y_q16_16 <= offset_y_q16_16 <<< 1;
+      end else begin
+        // pan (same as before)
+        if (pulse_left) offset_x_q16_16 <= offset_x_q16_16 - pan_step_world_q16;
+        if (pulse_right) offset_x_q16_16 <= offset_x_q16_16 + pan_step_world_q16;
+        if (pulse_up) offset_y_q16_16 <= offset_y_q16_16 + pan_step_world_q16;
+        if (pulse_down) offset_y_q16_16 <= offset_y_q16_16 - pan_step_world_q16;
+      end
     end
   end
 endmodule
