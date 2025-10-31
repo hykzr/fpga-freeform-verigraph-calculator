@@ -88,6 +88,7 @@ module mapper_plot_points (
 
     // streamed points (Q16.16)
     input wire               start,     // strobe: this (x,y) is valid this cycle
+    input wire               y_valid,
     input wire signed [31:0] x_q16_16,
     input wire signed [31:0] y_q16_16,
 
@@ -98,11 +99,11 @@ module mapper_plot_points (
     input  wire [12:0] pixel_index,
     output wire [15:0] pixel_colour
 );
-  localparam integer SCREEN_W = `DISP_W;
-  localparam integer SCREEN_H = `DISP_H;
-  localparam integer CENTER_X = (`DISP_W / 2);
-  localparam integer CENTER_Y = (`DISP_H / 2);
-  localparam integer VRAM_SIZE = (`DISP_W * `DISP_H);
+  localparam SCREEN_W = `DISP_W;
+  localparam SCREEN_H = `DISP_H;
+  localparam CENTER_X = (`DISP_W / 2);
+  localparam CENTER_Y = (`DISP_H / 2);
+  localparam VRAM_SIZE = (`DISP_W * `DISP_H);
 
   // Colors (RGB565)
   localparam [15:0] COL_BG = 16'h0000;  // black
@@ -111,32 +112,25 @@ module mapper_plot_points (
   localparam [15:0] COL_ORIGIN = 16'hFFE0;  // yellow
   localparam [15:0] COL_UNIT = 16'hF800;  // red
 
-  // 1bpp framebuffer for curve
-  reg vram[0:VRAM_SIZE-1];
+  reg [6 * SCREEN_W - 1 : 0] curve_y;
+  reg [SCREEN_W - 1 : 0] curve_y_valid;
 
-  // ---------- common helpers ----------
   wire [3:0] e_neg = -zoom_exp[3:0];
 
-  // map any world (wx, wy) to integer pixel (px, py)
-  // Using shifts only (zoom = 2^exp), then add screen center.
-  // Comb wires for the streamed sample
-  wire signed [31:0] dx_q16 = x_q16_16 - offset_x_q16_16;
-  wire signed [31:0] dy_q16 = y_q16_16 - offset_y_q16_16;
-
+  wire signed [31:0] dx_q16 = x_q16_16 + offset_x_q16_16;
+  wire signed [31:0] dy_q16 = y_q16_16 + offset_y_q16_16;
   wire signed [31:0] xs_q16 = (zoom_exp >= 0) ? (dx_q16 <<< zoom_exp) : (dx_q16 >>> e_neg);
   wire signed [31:0] ys_q16 = (zoom_exp >= 0) ? (dy_q16 <<< zoom_exp) : (dy_q16 >>> e_neg);
-
   wire signed [31:0] xs_cen_q16 = xs_q16 + (CENTER_X <<< 16);
   wire signed [31:0] ys_cen_q16 = (CENTER_Y <<< 16) - ys_q16;
-
   wire signed [15:0] px_samp = xs_cen_q16 >>> 16;
   wire signed [15:0] py_samp = ys_cen_q16 >>> 16;
-
-  wire inb_samp = (px_samp >= 0) && (px_samp < SCREEN_W) && (py_samp >= 0) && (py_samp < SCREEN_H);
+  wire px_samp_in = (px_samp >= 0) && (px_samp < SCREEN_W);
+  wire py_samp_in = (py_samp >= 0) && (py_samp < SCREEN_H);
 
   // ---------- map origin (0,0) ----------
-  wire signed [31:0] dx_o_q16 = -offset_x_q16_16;  // 0 - offset_x
-  wire signed [31:0] dy_o_q16 = -offset_y_q16_16;  // 0 - offset_y
+  wire signed [31:0] dx_o_q16 = offset_x_q16_16;  // 0 - offset_x
+  wire signed [31:0] dy_o_q16 = offset_y_q16_16;  // 0 - offset_y
   wire signed [31:0] xo_q16 = (zoom_exp >= 0) ? (dx_o_q16 <<< zoom_exp) : (dx_o_q16 >>> e_neg);
   wire signed [31:0] yo_q16 = (zoom_exp >= 0) ? (dy_o_q16 <<< zoom_exp) : (dy_o_q16 >>> e_neg);
   wire signed [31:0] xo_c_q16 = xo_q16 + (CENTER_X <<< 16);
@@ -147,16 +141,12 @@ module mapper_plot_points (
   wire py_org_in = (py_org >= 0) && (py_org < SCREEN_H);
 
   // ---------- map unit point (4,0) ----------
-  wire signed [31:0] four_q16 = 32'sd4 <<< 16;
-  wire signed [31:0] dx_u_q16 = four_q16 - offset_x_q16_16;
-  wire signed [31:0] dy_u_q16 = -offset_y_q16_16;
+  wire signed [31:0] dx_u_q16 = (32'sd4 <<< 16) + offset_x_q16_16;
   wire signed [31:0] xu_q16 = (zoom_exp >= 0) ? (dx_u_q16 <<< zoom_exp) : (dx_u_q16 >>> e_neg);
-  wire signed [31:0] yu_q16 = (zoom_exp >= 0) ? (dy_u_q16 <<< zoom_exp) : (dy_u_q16 >>> e_neg);
   wire signed [31:0] xu_c_q16 = xu_q16 + (CENTER_X <<< 16);
-  wire signed [31:0] yu_c_q16 = (CENTER_Y <<< 16) - yu_q16;
   wire signed [15:0] px_unit = xu_c_q16 >>> 16;
-  wire signed [15:0] py_unit = yu_c_q16 >>> 16;
-  wire unit_inb = (px_unit >= 0) && (px_unit < SCREEN_W) && (py_unit >= 0) && (py_unit < SCREEN_H);
+  wire signed [15:0] py_unit = py_org;
+  wire unit_inb = (px_unit >= 0) && (px_unit < SCREEN_W) && py_org_in;
 
   // ---------- write holdoff after clear ----------
   reg [1:0] holdoff;
@@ -165,15 +155,19 @@ module mapper_plot_points (
     else if (clear_curves) holdoff <= 2'b11;  // mask writes for 2 cycles
     else holdoff <= {1'b0, holdoff[1]};
   end
-  wire we = start && inb_samp && (holdoff == 2'b00);
+  wire we = start && px_samp_in && (holdoff == 2'b00);
 
   // ---------- VRAM write / clear ----------
-  integer j;
+  integer j, k;
   always @(posedge clk) begin
     if (rst || clear_curves) begin
-      for (j = 0; j < VRAM_SIZE; j = j + 1) vram[j] <= 1'b0;
+      curve_y_valid <= 0;
+      curve_y <= 0;
     end else if (we) begin
-      vram[py_samp*SCREEN_W+px_samp] <= 1'b1;
+      curve_y_valid[px_samp] <= y_valid & py_samp_in;
+      if (y_valid) begin
+        for (k = 0; k < 6; k = k + 1) curve_y[px_samp*6+k] = py_samp[k];
+      end
     end
   end
 
@@ -193,7 +187,12 @@ module mapper_plot_points (
   wire on_unit = unit_inb && (sx == px_unit[6:0]) && (sy == py_unit[5:0]);
 
   // curve pixel
-  wire on_curve = vram[sy*SCREEN_W+sx];
+  wire on_curve = curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
+                  && curve_y[sx*6+1] == sy[1]
+                  && curve_y[sx*6+2] == sy[2]
+                  && curve_y[sx*6+3] == sy[3]
+                  && curve_y[sx*6+4] == sy[4]
+                  && curve_y[sx*6+5] == sy[5];
 
   // priority: curve > origin > unit > axes > bg
   assign pixel_colour =
@@ -206,38 +205,43 @@ module mapper_plot_points (
 endmodule
 
 module graph_plotter_core (
-    input wire clk_100,
-    input wire rst,
-    input wire p_left,
-    p_right,
-    p_up,
-    p_down,
-    input wire p_zoom_in,
-    p_zoom_out,
-    input wire p_clear_curves,
-
-    input  wire [12:0] pixel_index,
-    output wire [15:0] pixel_colour,
-
+    input  wire               clk_100,
+    input  wire               clk_pix,
+    input  wire               rst,
+    input  wire               up_p,
+    down_p,
+    left_p,
+    right_p,
+    confirm_p,
+    input  wire               mode_zoom,
     output reg                start_calc = 0,
     output wire signed [31:0] x_q16_16,
     input  wire               y_ready,
     y_valid,
-    input  wire signed [31:0] y_q16_16
+    input  wire signed [31:0] y_q16_16,
+    output wire        [ 7:0] oled_out
 );
+  wire move_up = up_p & ~mode_zoom;
+  wire move_down = down_p & ~mode_zoom;
+  wire move_left = left_p & ~mode_zoom;
+  wire move_right = right_p & ~mode_zoom;
+  wire zoom_in_p = mode_zoom & up_p;
+  wire zoom_out_p = mode_zoom & down_p;
+  wire clear_pulse = confirm_p;
+
   // 1) viewport (pan/zoom)
-  wire signed [ 3:0] zoom_exp;
+  wire signed [3:0] zoom_exp;
   wire signed [31:0] offset_x_q16_16;
   wire signed [31:0] offset_y_q16_16;
   viewport_ctrl u_vp (
       .clk(clk_100),
       .rst(rst),
-      .pulse_left(p_left),
-      .pulse_right(p_right),
-      .pulse_up(p_up),
-      .pulse_down(p_down),
-      .pulse_zoom_in(p_zoom_in),
-      .pulse_zoom_out(p_zoom_out),
+      .pulse_left(move_left),
+      .pulse_right(move_right),
+      .pulse_up(move_up),
+      .pulse_down(move_down),
+      .pulse_zoom_in(zoom_in_p),
+      .pulse_zoom_out(zoom_out_p),
       .zoom_exp(zoom_exp),
       .offset_x_q16_16(offset_x_q16_16),
       .offset_y_q16_16(offset_y_q16_16)
@@ -261,7 +265,7 @@ module graph_plotter_core (
   assign x_q16_16 = x_cur;
 
   always @(posedge clk_100) begin
-    if (rst | p_clear_curves) begin
+    if (rst | clear_pulse) begin
       idx    <= 8'd0;
       x_cur  <= x_start_q16_16;
       start_calc <= 1'b0;
@@ -282,19 +286,30 @@ module graph_plotter_core (
   end
 
   // 4) plot received points (always ready to take one per cycle)
-  wire need_clear = p_clear_curves | p_left | p_right | p_up | p_down | p_zoom_in | p_zoom_out;
+  wire need_clear = up_p | down_p | left_p | right_p | confirm_p;
+  wire [12:0] pixel_index;
+  wire [15:0] pixel_colour;
   mapper_plot_points u_plot (
       .clk(clk_100),
       .rst(rst),
       .zoom_exp(zoom_exp),
       .offset_x_q16_16(offset_x_q16_16),
       .offset_y_q16_16(offset_y_q16_16),
-      .start(y_ready & y_valid),
+      .start(y_ready),
+      .y_valid(y_valid),
       .x_q16_16(x_q16_16),
       .y_q16_16(y_q16_16),
       .clear_curves(need_clear),
       .pixel_index(pixel_index),
       .pixel_colour(pixel_colour)
+  );
+
+  oled u_oled_graph (
+      .clk_6p25m(clk_pix),
+      .rst(rst),
+      .pixel_color(pixel_colour),
+      .oled_out(oled_out),
+      .pixel_index(pixel_index)
   );
 endmodule
 
@@ -323,18 +338,16 @@ endmodule
 
 module graph_plotter_top_demo2x1 (
     input wire clk_100,
+    clk_pix,
     input wire rst,
 
-    input wire p_left,
-    p_right,
-    p_up,
-    p_down,
-    input wire p_zoom_in,
-    p_zoom_out,
-    input wire p_clear_curves,
-
-    input  wire [12:0] pixel_index,
-    output wire [15:0] pixel_colour
+    input wire up_p,
+    down_p,
+    left_p,
+    right_p,
+    confirm_p,
+    input wire mode_zoom,
+    output wire [7:0] oled_out
 );
   wire start_calc;
   wire signed [31:0] x_q16_16;
@@ -343,21 +356,20 @@ module graph_plotter_top_demo2x1 (
 
   graph_plotter_core u_core (
       .clk_100(clk_100),
+      .clk_pix(clk_pix),
       .rst(rst),
-      .p_left(p_left),
-      .p_right(p_right),
-      .p_up(p_up),
-      .p_down(p_down),
-      .p_zoom_in(p_zoom_in),
-      .p_zoom_out(p_zoom_out),
-      .p_clear_curves(p_clear_curves),
-      .pixel_index(pixel_index),
-      .pixel_colour(pixel_colour),
+      .left_p(left_p),
+      .right_p(right_p),
+      .up_p(up_p),
+      .down_p(down_p),
+      .confirm_p(confirm_p),
+      .mode_zoom(mode_zoom),
       .start_calc(start_calc),
       .x_q16_16(x_q16_16),
       .y_ready(y_ready),
       .y_valid(y_valid),
-      .y_q16_16(y_q16_16)
+      .y_q16_16(y_q16_16),
+      .oled_out(oled_out)
   );
 
   compute_2x_plus_1_dummy u_dummy (

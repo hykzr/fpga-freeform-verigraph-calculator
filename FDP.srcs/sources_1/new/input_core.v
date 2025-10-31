@@ -60,14 +60,11 @@ module input_core #(
     input wire clk,
     input wire rst,
 
-    // raw buttons (debounced in-module)
-    input wire btnU,
-    input wire btnD,
-    input wire btnL,
-    input wire btnR,
-    input wire btnC,
-
-    // select which keypad is active (e.g., SW[0])
+    input wire up_p,
+    down_p,
+    left_p,
+    right_p,
+    confirm_p,
     input wire kb_sel,
 
     // external bulk load (replace buffer)
@@ -83,31 +80,9 @@ module input_core #(
     output wire is_clear,
     output wire is_equal,
 
-    // === Keypad OLED pixel pipe (NEW) ===
     input  wire       clk_pix,
     output wire [7:0] oled_out
 );
-  // ---------- Buttons → pulses ----------
-  wire up_p, down_p, left_p, right_p, confirm_p;
-  nav_keys #(
-      .CLK_HZ(CLK_HZ),
-      .DB_MS(DEBOUNCE_MS),
-      .RPT_START_MS(REPEAT_START_MS),
-      .RPT_MS(REPEAT_INTERVAL_MS)
-  ) ukeys (
-      .clk(clk),
-      .rst(rst),
-      .btnU(btnU),
-      .btnD(btnD),
-      .btnL(btnL),
-      .btnR(btnR),
-      .btnC(btnC),
-      .up_p(up_p),
-      .down_p(down_p),
-      .left_p(left_p),
-      .right_p(right_p),
-      .confirm_p(confirm_p)
-  );
   wire [7:0] oled_out_0;
   wire [7:0] oled_out_1;
 
@@ -324,12 +299,11 @@ module student_input #(
     input wire clk,
     input wire rst,
 
-    input wire btnU,
-    btnD,
-    btnL,
-    btnR,
-    btnC,
-
+    input wire up_p,
+    down_p,
+    left_p,
+    right_p,
+    confirm_p,
     input wire kb_sel,
 
     input  wire rx,
@@ -367,11 +341,11 @@ module student_input #(
   ) core (
       .clk(clk),
       .rst(rst),
-      .btnU(btnU),
-      .btnD(btnD),
-      .btnL(btnL),
-      .btnR(btnR),
-      .btnC(btnC),
+      .up_p(up_p),
+      .down_p(down_p),
+      .left_p(left_p),
+      .right_p(right_p),
+      .confirm_p(confirm_p),
       .kb_sel(kb_sel),
 
       .buf_load(load_buf),
