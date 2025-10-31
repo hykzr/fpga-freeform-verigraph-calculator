@@ -70,8 +70,8 @@ module range_planner (
   assign sample_count = SCREEN_W[7:0];
 
   always @* begin
-    if (zoom_exp >= 0) x_start_q16_16 = (neg_cx_q >>> zoom_exp) + offset_x_q16_16;
-    else x_start_q16_16 = (neg_cx_q <<< e_neg) + offset_x_q16_16;
+    if (zoom_exp >= 0) x_start_q16_16 = (neg_cx_q >>> zoom_exp) - offset_x_q16_16;
+    else x_start_q16_16 = (neg_cx_q <<< e_neg) - offset_x_q16_16;
     if (zoom_exp >= 0) x_step_q16_16 = (`Q16_16_ONE >>> zoom_exp);
     else x_step_q16_16 = (`Q16_16_ONE <<< e_neg);
   end
@@ -227,7 +227,7 @@ module graph_plotter_core (
   wire move_right = right_p & ~mode_zoom;
   wire zoom_in_p = mode_zoom & up_p;
   wire zoom_out_p = mode_zoom & down_p;
-  wire clear_pulse = confirm_p;
+  wire need_clear = up_p | down_p | left_p | right_p | confirm_p;
 
   // 1) viewport (pan/zoom)
   wire signed [3:0] zoom_exp;
@@ -265,7 +265,7 @@ module graph_plotter_core (
   assign x_q16_16 = x_cur;
 
   always @(posedge clk_100) begin
-    if (rst | clear_pulse) begin
+    if (rst | need_clear) begin
       idx    <= 8'd0;
       x_cur  <= x_start_q16_16;
       start_calc <= 1'b0;
@@ -286,7 +286,6 @@ module graph_plotter_core (
   end
 
   // 4) plot received points (always ready to take one per cycle)
-  wire need_clear = up_p | down_p | left_p | right_p | confirm_p;
   wire [12:0] pixel_index;
   wire [15:0] pixel_colour;
   mapper_plot_points u_plot (

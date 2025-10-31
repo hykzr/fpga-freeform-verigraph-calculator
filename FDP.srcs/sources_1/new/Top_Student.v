@@ -1,35 +1,20 @@
 `timescale 1ns / 1ps
 `include "constants.vh"
 
-//////////////////////////////////////////////////////////////////////////////////
-//
-//  FILL IN THE FOLLOWING INFORMATION:
-//  STUDENT A NAME:
-//  STUDENT B NAME:
-//  STUDENT C NAME:
-//
-//  UART TESTING BRANCH: Connect input to laptop for compute verification
-//  - student_compute removed
-//  - RsRx/RsTx exposed for laptop connection
-//
-//////////////////////////////////////////////////////////////////////////////////
-
 module Top_Student (
     input  wire        clk,
     input  wire        btnL,
-    input  wire        btnU,
-    input  wire        btnD,
-    input  wire        btnR,
-    input  wire        btnC,
+    btnU,
+    btnD,
+    btnR,
+    btnC,
     input  wire [15:0] sw,
     output wire [15:0] led,
     output wire [ 7:0] JA,
-    output wire [ 7:0] JB,
-    output wire [ 7:0] JC,
-
-    // UART to laptop (for testing)
-    input  wire RsRx,  // Connect to laptop TX
-    output wire RsTx   // Connect to laptop RX
+    JB,
+    JC,
+    input  wire        RsRx,
+    output wire        RsTx
 );
   localparam BAUD_RATE = 115200;
   localparam MAX_DATA = 32;
@@ -70,43 +55,59 @@ module Top_Student (
       .confirm_p(confirm_p)
   );
 
-  wire [15:0] debug_led_input;
+  // Graph interface
+  wire               graph_start;
+  wire signed [31:0] graph_x_q16_16;
+  wire signed [31:0] graph_y_q16_16;
+  wire               graph_y_valid;
+  wire               graph_y_ready;
+  wire               graph_mode;
+  wire        [15:0] debug_led_input;
 
-  // student_input connected directly to laptop via UART
   student_input #(
       .CLK_HZ(100_000_000),
       .BAUD_RATE(BAUD_RATE),
       .MAX_DATA(MAX_DATA)
   ) U_INPUT (
-      .clk            (clk),
-      .rst            (rst),
-      .kb_sel         (kb_select),
-      .up_p           (~button_for_graph & up_p),
-      .down_p         (~button_for_graph & down_p),
-      .left_p         (~button_for_graph & left_p),
-      .right_p        (~button_for_graph & right_p),
-      .confirm_p      (~button_for_graph & confirm_p),
-      .rx             (RsRx),                           // From laptop
-      .tx             (RsTx),                           // To laptop
-      .clk_pix        (clk_6p25M),
+      .clk(clk),
+      .rst(rst),
+      .kb_sel(kb_select),
+      .up_p(~button_for_graph & up_p),
+      .down_p(~button_for_graph & down_p),
+      .left_p(~button_for_graph & left_p),
+      .right_p(~button_for_graph & right_p),
+      .confirm_p(~button_for_graph & confirm_p),
+      .rx(RsRx),
+      .tx(RsTx),
+      .graph_start(graph_start),
+      .graph_x_q16_16(graph_x_q16_16),
+      .graph_y_q16_16(graph_y_q16_16),
+      .graph_y_valid(graph_y_valid),
+      .graph_y_ready(graph_y_ready),
+      .graph_mode(graph_mode),
+      .clk_pix(clk_6p25M),
       .oled_keypad_out(JA),
-      .oled_text_out  (JB),
-      .debug_led      (debug_led_input)
+      .oled_text_out(JB),
+      .debug_led(debug_led_input)
   );
 
   assign led = debug_led_input;
 
-  graph_plotter_top_demo2x1 U_GRAPH (
+  graph_plotter_core u_core (
       .clk_100(clk),
       .clk_pix(clk_6p25M),
-      .rst(rst),
+      .rst(rst | ~graph_mode),
       .left_p(button_for_graph & left_p),
       .right_p(button_for_graph & right_p),
       .up_p(button_for_graph & up_p),
       .down_p(button_for_graph & down_p),
       .confirm_p(button_for_graph & confirm_p),
       .mode_zoom(mode_zoom),
+      .start_calc(graph_start),
+      .x_q16_16(graph_x_q16_16),
+      .y_ready(graph_y_ready & graph_mode),
+      .y_valid(graph_y_valid & graph_mode),
+      .y_q16_16(graph_y_q16_16),
       .oled_out(JC)
   );
-
 endmodule

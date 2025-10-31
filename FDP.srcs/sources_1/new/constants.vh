@@ -40,6 +40,7 @@
 `define CMD_CLEAR 8'h11   // clear remote display/buffer
 `define CMD_COMPUTE 8'h20   // payload: ASCII expression
 `define CMD_RESULT  8'h21   // payload: ASCII numeric result (for simple render)
+`define CMD_GRAPH_EVAL 8'h22
 `define START_BYTE  8'hAA   // set/render text payload
 `define END_BYTE 8'h55   // clear remote display/buffer
 `endif // EE2026_CONSTANTS_VF
