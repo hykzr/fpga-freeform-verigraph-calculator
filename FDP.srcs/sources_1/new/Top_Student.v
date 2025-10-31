@@ -8,6 +8,8 @@
 //  STUDENT B NAME:
 //  STUDENT C NAME:
 //
+//  MODIFIED: Direct port connections instead of UART for single-board design
+//
 //////////////////////////////////////////////////////////////////////////////////
 
 module Top_Student (
@@ -23,8 +25,8 @@ module Top_Student (
     output wire [ 7:0] JB,
     output wire [ 7:0] JC
 );
-  localparam BAUD_RATE = 115200;
   localparam MAX_DATA = 32;
+
   wire rst = sw[15];
   wire mode_zoom = sw[14];
   wire button_for_graph = sw[13];
@@ -61,14 +63,19 @@ module Top_Student (
       .confirm_p(confirm_p)
   );
 
-  wire input_rx, input_tx, compute_rx, compute_tx;
-  assign input_rx   = compute_tx;  // connect directly for now
-  assign compute_rx = input_tx;
+  // MODIFIED: Direct connections between input and compute (no UART)
+  wire                  compute_start;
+  wire                  compute_clear;
+  wire [           7:0] compute_len;
+  wire [8*MAX_DATA-1:0] compute_bus;
+  wire                  result_valid;
+  wire [           7:0] result_len;
+  wire [8*MAX_DATA-1:0] result_bus;
 
   wire [15:0] debug_led_input, debug_led_output;
+
   student_input #(
-      .CLK_HZ(100_000_000),
-      .BAUD_RATE(BAUD_RATE),
+      .CLK_HZ  (100_000_000),
       .MAX_DATA(MAX_DATA)
   ) U_INPUT (
       .clk(clk),
@@ -79,25 +86,41 @@ module Top_Student (
       .left_p(~button_for_graph & left_p),
       .right_p(~button_for_graph & right_p),
       .confirm_p(~button_for_graph & confirm_p),
-      .rx(input_rx),
-      .tx(input_tx),
+
+      // Direct compute interface
+      .compute_start(compute_start),
+      .compute_clear(compute_clear),
+      .compute_len(compute_len),
+      .compute_bus(compute_bus),
+      .result_valid(result_valid),
+      .result_len(result_len),
+      .result_bus(result_bus),
+
       .clk_pix(clk_6p25M),
       .oled_keypad_out(JA),
       .oled_text_out(JB),
       .debug_led(debug_led_input)
   );
 
-  student_compute #(
-      .CLK_HZ(100_000_000),
-      .BAUD_RATE(BAUD_RATE),
+  student_compute_direct #(
+      .CLK_HZ  (100_000_000),
       .MAX_DATA(MAX_DATA)
   ) U_OUTPUT (
       .clk(clk),
       .rst(rst),
-      .rx(compute_rx),
-      .tx(compute_tx),
+
+      // Direct compute interface
+      .compute_start(compute_start),
+      .compute_clear(compute_clear),
+      .compute_len(compute_len),
+      .compute_bus(compute_bus),
+      .result_valid(result_valid),
+      .result_len(result_len),
+      .result_bus(result_bus),
+
       .debug_led(debug_led_output)
   );
+
   assign led = led_for_output ? debug_led_input : debug_led_output;
 
   graph_plotter_top_demo2x1 U_GRAPH (

@@ -1,5 +1,6 @@
 `timescale 1ns / 1ps
 `include "constants.vh"
+
 // text_buffer.v  — supports append (<=4 bytes) and replace (<=MAX_DATA)
 module text_buffer #(
     parameter integer MAX_DATA = 32
@@ -166,10 +167,10 @@ module input_core #(
 
 endmodule
 
-module compute_link #(
-    parameter integer CLK_HZ    = 100_000_000,
-    parameter integer BAUD_RATE = 115200,
-    parameter integer MAX_DATA  = 32
+// MODIFIED: Direct port connection instead of UART
+module compute_link_direct #(
+    parameter integer CLK_HZ   = 100_000_000,
+    parameter integer MAX_DATA = 32
 ) (
     input wire clk,
     input wire rst,
@@ -180,111 +181,69 @@ module compute_link #(
     input wire [           7:0] expr_len,  // 0..MAX_DATA
     input wire [8*MAX_DATA-1:0] expr_bus,  // ASCII payload
 
-    // UART
-    input  wire rx,
-    output wire tx,
+    // Direct connections to compute (replacing UART TX)
+    output reg                  compute_start,  // 1-cycle pulse to start compute
+    output reg                  compute_clear,  // 1-cycle pulse to clear
+    output reg [           7:0] compute_len,
+    output reg [8*MAX_DATA-1:0] compute_bus,
+
+    // Direct connections from compute (replacing UART RX)
+    input wire                  result_valid,  // 1-cycle pulse
+    input wire [           7:0] result_len,
+    input wire [8*MAX_DATA-1:0] result_bus,
 
     // To text_buffer (bulk load of RESULT)
     output reg                  load_buf,  // 1-cycle pulse
     output reg [           7:0] load_len,
-    output reg [8*MAX_DATA-1:0] load_bus,
-
-    // optional status
-    output wire tx_busy,
-    output wire rx_frame_valid,
-    output wire rx_chk_ok
+    output reg [8*MAX_DATA-1:0] load_bus
 );
-  // ---------------- TX ----------------
-  reg                   ptx_start;
-  reg  [           7:0] ptx_cmd;
-  reg  [           7:0] ptx_len;  // N
-  reg  [8*MAX_DATA-1:0] ptx_bus;
-  wire                  ptx_busy;
 
-  proto_tx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) TX (
-      .clk(clk),
-      .rst(rst),
-      .start(ptx_start),
-      .cmd(ptx_cmd),
-      .data_len(ptx_len),
-      .data_bus(ptx_bus),
-      .busy(ptx_busy),
-      .tx(tx)
-  );
-  assign tx_busy = ptx_busy;
-
-  // ---------------- RX ----------------
-  wire prx_valid, prx_chk;
-  wire [7:0] prx_cmd;
-  wire [7:0] prx_len;
-  wire [8*MAX_DATA-1:0] prx_bus;
-
-  proto_rx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) RX (
-      .clk(clk),
-      .rst(rst),
-      .rx(rx),
-      .frame_valid(prx_valid),
-      .chk_ok(prx_chk),
-      .cmd(prx_cmd),
-      .data_len(prx_len),
-      .data_bus(prx_bus)
-  );
-  assign rx_frame_valid = prx_valid;
-  assign rx_chk_ok      = prx_chk;
-
-  // ---------------- Scheduler ----------------
-  // Queue '=' and 'C' while TX is busy. CLEAR has priority.
+  // Simplified scheduler - queue commands and send directly
   reg pending_clear, pending_compute;
+  reg busy;  // Prevent sending new commands while compute is processing
 
-  always @(posedge clk or posedge rst) begin
+  always @(posedge clk) begin
     if (rst) begin
-      ptx_start       <= 1'b0;
-      ptx_cmd         <= 8'h00;
-      ptx_len         <= 8'd0;
-      ptx_bus         <= {8 * MAX_DATA{1'b0}};
+      compute_start   <= 1'b0;
+      compute_clear   <= 1'b0;
+      compute_len     <= 8'd0;
+      compute_bus     <= {8 * MAX_DATA{1'b0}};
       pending_clear   <= 1'b0;
       pending_compute <= 1'b0;
+      busy            <= 1'b0;
       load_buf        <= 1'b0;
       load_len        <= 8'd0;
       load_bus        <= {8 * MAX_DATA{1'b0}};
     end else begin
-      ptx_start <= 1'b0;
-      load_buf  <= 1'b0;
+      compute_start <= 1'b0;
+      compute_clear <= 1'b0;
+      load_buf      <= 1'b0;
 
-      // latch triggers
+      // Latch triggers
       if (is_clear) pending_clear <= 1'b1;
       if (is_equal) pending_compute <= 1'b1;
 
-      // launch when free
-      if (!ptx_busy) begin
+      // Launch when not busy
+      if (!busy) begin
         if (pending_clear) begin
-          ptx_cmd <= `CMD_CLEAR;
-          ptx_len <= 8'd0;
-          ptx_bus <= {8 * MAX_DATA{1'b0}};
-          ptx_start <= 1'b1;
+          compute_clear <= 1'b1;
           pending_clear <= 1'b0;
+          busy          <= 1'b0;  // Clear doesn't need response
         end else if (pending_compute) begin
-          ptx_cmd <= `CMD_COMPUTE;
-          ptx_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
-          ptx_bus <= expr_bus;
-          ptx_start <= 1'b1;
+          compute_start <= 1'b1;
+          compute_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
+          compute_bus <= expr_bus;
           pending_compute <= 1'b0;
+          busy <= 1'b1;  // Wait for result
         end
       end
 
-      // apply RESULT
-      if (prx_valid && prx_chk && (prx_cmd == `CMD_RESULT)) begin
-        load_len <= (prx_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : prx_len;
-        load_bus <= prx_bus;
+      // Receive result and pass to text buffer
+      if (result_valid) begin
+        load_len <= (result_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : result_len;
+        load_bus <= result_bus;
         load_buf <= 1'b1;
+        busy     <= 1'b0;  // Ready for next command
       end
     end
   end
@@ -292,7 +251,6 @@ endmodule
 
 module student_input #(
     parameter integer CLK_HZ     = 100_000_000,
-    parameter integer BAUD_RATE  = 115200,
     parameter integer MAX_DATA   = 32,
     parameter integer FONT_SCALE = 2
 ) (
@@ -306,8 +264,14 @@ module student_input #(
     confirm_p,
     input wire kb_sel,
 
-    input  wire rx,
-    output wire tx,
+    // MODIFIED: Direct compute interface (replacing UART)
+    output wire                  compute_start,
+    output wire                  compute_clear,
+    output wire [           7:0] compute_len,
+    output wire [8*MAX_DATA-1:0] compute_bus,
+    input  wire                  result_valid,
+    input  wire [           7:0] result_len,
+    input  wire [8*MAX_DATA-1:0] result_bus,
 
     input  wire       clk_pix,          // 6.25 MHz
     output wire [7:0] oled_keypad_out,
@@ -361,10 +325,9 @@ module student_input #(
       .oled_out(oled_keypad_out)
   );
 
-  // ---------- compute_link ----------
-  compute_link #(
-      .CLK_HZ(CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
+  // ---------- compute_link_direct (no UART) ----------
+  compute_link_direct #(
+      .CLK_HZ  (CLK_HZ),
       .MAX_DATA(MAX_DATA)
   ) link (
       .clk(clk),
@@ -373,14 +336,21 @@ module student_input #(
       .is_clear(is_clear),
       .expr_len(buffer_len8),
       .expr_bus(buffer_flat),
-      .rx(rx),
-      .tx(tx),
+
+      // Direct to compute
+      .compute_start(compute_start),
+      .compute_clear(compute_clear),
+      .compute_len  (compute_len),
+      .compute_bus  (compute_bus),
+
+      // Direct from compute
+      .result_valid(result_valid),
+      .result_len  (result_len),
+      .result_bus  (result_bus),
+
       .load_buf(load_buf),
       .load_len(load_len),
-      .load_bus(load_bus),
-      .tx_busy(),
-      .rx_frame_valid(),
-      .rx_chk_ok()
+      .load_bus(load_bus)
   );
 
   // ---------- OLED #2: Text buffer ----------

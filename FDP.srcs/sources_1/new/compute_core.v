@@ -1,41 +1,53 @@
 `timescale 1ns / 1ps
 `include "constants.vh"
+
 // ------------------------------------------------------------
-// MAX_DATA == MAX_EXPR  → rx_bus feeds evaluator directly.
-// On CMD_COMPUTE: evaluate & reply with CMD_RESULT (ASCII decimal).
+// MODIFIED: Direct port connection instead of UART
+// MAX_DATA == MAX_EXPR  → input bus feeds evaluator directly.
+// On compute_start: evaluate & reply with result_valid (ASCII decimal).
 // On evaluator error: reply "ERR".
 // ------------------------------------------------------------
-module student_compute #(
-    parameter integer CLK_HZ    = 100_000_000,
-    parameter integer BAUD_RATE = 115200,
-    parameter integer MAX_DATA  = 32            // also evaluator MAX_EXPR
+module student_compute_direct #(
+    parameter integer CLK_HZ   = 100_000_000,
+    parameter integer MAX_DATA = 32            // also evaluator MAX_EXPR
 ) (
     input wire clk,
     input wire rst,
-    input wire rx,
-    output wire tx,
+
+    // MODIFIED: Direct interface replacing UART
+    input wire compute_start,  // 1-cycle pulse to start
+    input wire compute_clear,  // 1-cycle pulse to clear (optional, not used in compute)
+    input wire [7:0] compute_len,
+    input wire [8*MAX_DATA-1:0] compute_bus,
+
+    output reg                  result_valid,  // 1-cycle pulse when done
+    output reg [           7:0] result_len,
+    output reg [8*MAX_DATA-1:0] result_bus,
+
     output wire [15:0] debug_led
 );
-  // ---------- UART RX ----------
-  wire fr_valid, chk_ok;
-  wire [7:0] rx_cmd;
-  wire [7:0] rx_len;
-  wire [8*MAX_DATA-1:0] rx_bus;
 
-  proto_rx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) RX (
-      .clk(clk),
-      .rst(rst),
-      .rx(rx),
-      .frame_valid(fr_valid),
-      .chk_ok(chk_ok),
-      .cmd(rx_cmd),
-      .data_len(rx_len),
-      .data_bus(rx_bus)
-  );
+  // ---------- Input Latching ----------
+  // Latch input when compute_start is triggered
+  reg [7:0] rx_len_latched;
+  reg [8*MAX_DATA-1:0] rx_bus_latched;
+  reg compute_triggered;
+
+  always @(posedge clk) begin
+    if (rst) begin
+      rx_len_latched <= 8'd0;
+      rx_bus_latched <= {8 * MAX_DATA{1'b0}};
+      compute_triggered <= 1'b0;
+    end else begin
+      if (compute_start) begin
+        rx_len_latched <= compute_len;
+        rx_bus_latched <= compute_bus;
+        compute_triggered <= 1'b1;
+      end else if (compute_triggered && eval_start) begin
+        compute_triggered <= 1'b0;  // Clear after we've started evaluation
+      end
+    end
+  end
 
   // ---------- Evaluator ----------
   localparam integer ILW = $clog2(MAX_DATA + 1);
@@ -51,8 +63,8 @@ module student_compute #(
       .clk(clk),
       .rst(rst),
       .start(eval_start),
-      .in_str(rx_bus),
-      .in_len(rx_len[ILW-1:0]),
+      .in_str(rx_bus_latched),
+      .in_len(rx_len_latched[ILW-1:0]),
       .done(eval_done),
       .result(eval_result),
       .errors(eval_errors)
@@ -77,72 +89,44 @@ module student_compute #(
       .out_bus(asc_bus)
   );
 
-  // ---------- UART TX ----------
-  reg                   tx_start;
-  reg  [           7:0] tx_cmd;
-  reg  [           7:0] tx_len;
-  reg  [8*MAX_DATA-1:0] tx_bus;
-  wire                  tx_busy;
-
-  proto_tx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) TX (
-      .clk(clk),
-      .rst(rst),
-      .start(tx_start),
-      .cmd(tx_cmd),
-      .data_len(tx_len),
-      .data_bus(tx_bus),
-      .busy(tx_busy),
-      .tx(tx)
-  );
-
   // ---------- FSM ----------
-  localparam S_IDLE = 3'd0, S_EVAL = 3'd1, S_ASC = 3'd2, S_SEND = 3'd3, S_WAIT = 3'd4;
+  localparam S_IDLE = 3'd0, S_EVAL = 3'd1, S_ASC = 3'd2, S_RESULT = 3'd3;
   reg [2:0] st;
   integer i;
 
   // ---------- Debug (sticky) ----------
-  reg dbg_eval_active, dbg_eval_done, dbg_asc_active, dbg_asc_done, dbg_tx_started;
+  reg dbg_eval_active, dbg_eval_done, dbg_asc_active, dbg_asc_done, dbg_result_sent;
 
-  // helper: clear sticky flags at start of a new valid request
-  wire rx_is_compute = (rx_cmd == `CMD_COMPUTE);
-  wire rx_len_nz = (rx_len != 8'd0);
-  wire accept_request = (fr_valid && chk_ok && rx_is_compute);
-
-  always @(posedge clk or posedge rst) begin
+  always @(posedge clk) begin
     if (rst) begin
       st <= S_IDLE;
       eval_start <= 1'b0;
       asc_start <= 1'b0;
-      tx_start <= 1'b0;
-      tx_cmd <= 8'h00;
-      tx_len <= 8'd0;
-      tx_bus <= {8 * MAX_DATA{8'h00}};
+      result_valid <= 1'b0;
+      result_len <= 8'd0;
+      result_bus <= {8 * MAX_DATA{8'h00}};
       dbg_eval_active <= 1'b0;
       dbg_eval_done <= 1'b0;
       dbg_asc_active <= 1'b0;
       dbg_asc_done <= 1'b0;
-      dbg_tx_started <= 1'b0;
+      dbg_result_sent <= 1'b0;
     end else begin
       eval_start <= 1'b0;
-      asc_start  <= 1'b0;
-      tx_start   <= 1'b0;
+      asc_start <= 1'b0;
+      result_valid <= 1'b0;
 
-      // Clear debug latches on a new accepted COMPUTE request
-      if (accept_request) begin
+      // Clear debug latches on a new compute request
+      if (compute_triggered && st == S_IDLE) begin
         dbg_eval_active <= 1'b0;
         dbg_eval_done <= 1'b0;
         dbg_asc_active <= 1'b0;
         dbg_asc_done <= 1'b0;
-        dbg_tx_started <= 1'b0;
+        dbg_result_sent <= 1'b0;
       end
 
       case (st)
         S_IDLE: begin
-          if (accept_request) begin
+          if (compute_triggered) begin
             eval_start      <= 1'b1;
             dbg_eval_active <= 1'b1;
             st              <= S_EVAL;
@@ -154,14 +138,13 @@ module student_compute #(
             dbg_eval_active <= 1'b0;
             dbg_eval_done   <= 1'b1;
             if (eval_errors != 8'd0) begin
-              // reply "ERR"
-              tx_cmd <= `CMD_RESULT;
-              tx_len <= (3 > MAX_DATA[7:0]) ? MAX_DATA[7:0] : 8'd3;
-              tx_bus <= {8 * MAX_DATA{8'h00}};
-              tx_bus[8*0+:8] <= 8'h45;  // 'E'
-              if (MAX_DATA > 1) tx_bus[8*1+:8] <= 8'h52;  // 'R'
-              if (MAX_DATA > 2) tx_bus[8*2+:8] <= 8'h52;  // 'R'
-              st <= S_SEND;
+              // Set result to "ERR"
+              result_len <= (3 > MAX_DATA[7:0]) ? MAX_DATA[7:0] : 8'd3;
+              result_bus <= {8 * MAX_DATA{8'h00}};
+              result_bus[8*0+:8] <= 8'h45;  // 'E'
+              if (MAX_DATA > 1) result_bus[8*1+:8] <= 8'h52;  // 'R'
+              if (MAX_DATA > 2) result_bus[8*2+:8] <= 8'h52;  // 'R'
+              st <= S_RESULT;
             end else begin
               asc_start      <= 1'b1;
               dbg_asc_active <= 1'b1;
@@ -174,27 +157,19 @@ module student_compute #(
           if (asc_done) begin
             dbg_asc_active <= 1'b0;
             dbg_asc_done <= 1'b1;
-            tx_cmd <= `CMD_RESULT;
-            tx_len <= (asc_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : asc_len;
-            tx_bus <= {8 * MAX_DATA{8'h00}};
-            for (i = 0; i < MAX_DATA; i = i + 1) if (i < tx_len) tx_bus[8*i+:8] <= asc_bus[8*i+:8];
-            st <= S_SEND;
+            result_len <= (asc_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : asc_len;
+            result_bus <= {8 * MAX_DATA{8'h00}};
+            for (i = 0; i < MAX_DATA; i = i + 1)
+            if (i < result_len) result_bus[8*i+:8] <= asc_bus[8*i+:8];
+            st <= S_RESULT;
           end
         end
 
-        S_SEND: begin
-          if (!tx_busy) begin
-            tx_start       <= 1'b1;
-            dbg_tx_started <= 1'b1;
-            st             <= S_WAIT;
-          end
-        end
-
-        S_WAIT: begin
-          // wait until UART completes (busy goes high then low)
-          if (!tx_busy) begin
-            st <= S_IDLE;
-          end
+        S_RESULT: begin
+          // Send result as 1-cycle pulse
+          result_valid <= 1'b1;
+          dbg_result_sent <= 1'b1;
+          st <= S_IDLE;
         end
 
         default: st <= S_IDLE;
