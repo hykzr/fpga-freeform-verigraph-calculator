@@ -125,7 +125,7 @@ module key_token_codec (
       end
       `FLOOR_KEY: begin
         label_bytes = {8'h00, `FLOOR_R_KEY, "x", `FLOOR_L_KEY};  // ⌊x⌋
-        label_len   = 3'd4;
+        label_len   = 3'd3;
         emit_bytes  = {"(", "r","o","o","l","f"}; // "floor("
         emit_len    = 3'd6;
       end
