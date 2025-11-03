@@ -5,28 +5,78 @@ module focus_grid #(
     parameter ROWS = 4,
     COLS = 4
 ) (
-    input  wire       clk,
-    input  wire       rst,
-    input  wire       up_p,
-    input  wire       down_p,
-    input  wire       left_p,
-    input  wire       right_p,
-    input  wire       confirm_p,
-    output reg  [2:0] row,
-    output reg  [2:0] col,
-    output reg        select_pulse
+    input wire clk,
+    input wire rst,
+
+    // Button navigation
+    input wire up_p,
+    input wire down_p,
+    input wire left_p,
+    input wire right_p,
+    input wire confirm_p,
+
+    // Mouse input
+    input wire [6:0] mouse_x,    // 0..95 (OLED coords)
+    input wire [5:0] mouse_y,    // 0..63 (OLED coords)
+    input wire       mouse_left, // Left button state
+
+    output reg [2:0] row,
+    output reg [2:0] col,
+    output reg       select_pulse
 );
+
+  // Calculate cell dimensions
+  localparam integer CELL_W = `DISP_W / COLS;
+  localparam integer CELL_H = `DISP_H / ROWS;
+
+  // Border thickness (ignore clicks here)
+  localparam integer BORDER = 1;
+
+  // Mouse click edge detection
+  reg mouse_left_prev;
+  wire mouse_click = mouse_left && !mouse_left_prev;
+
+  // Calculate which cell mouse is over
+  wire [2:0] mouse_col = mouse_x / CELL_W;
+  wire [2:0] mouse_row = mouse_y / CELL_H;
+
+  // Calculate position within cell
+  wire [6:0] cell_x = mouse_x - (mouse_col * CELL_W);
+  wire [5:0] cell_y = mouse_y - (mouse_row * CELL_H);
+
+  // Check if mouse is NOT on border (with safety bounds check)
+  wire in_valid_col = (mouse_col < COLS);
+  wire in_valid_row = (mouse_row < ROWS);
+  wire not_on_border = (cell_x >= BORDER) && (cell_x < CELL_W - BORDER) &&
+                       (cell_y >= BORDER) && (cell_y < CELL_H - BORDER);
+  wire valid_click = mouse_click && in_valid_col && in_valid_row && not_on_border;
+
   always @(posedge clk) begin
     if (rst) begin
       row <= 0;
       col <= 0;
       select_pulse <= 1'b0;
+      mouse_left_prev <= 1'b0;
     end else begin
+      // Update mouse button history
+      mouse_left_prev <= mouse_left;
+
+      // Default: button confirm
       select_pulse <= confirm_p;
-      if (up_p && row > 0) row <= row - 1;
-      if (down_p && row < ROWS - 1) row <= row + 1;
-      if (left_p && col > 0) col <= col - 1;
-      if (right_p && col < COLS - 1) col <= col + 1;
+
+      // Mouse click takes priority
+      if (valid_click) begin
+        // Set focus to clicked cell and trigger
+        row <= mouse_row;
+        col <= mouse_col;
+        select_pulse <= 1'b1;
+      end else begin
+        // Normal button navigation (only if no valid click)
+        if (up_p && row > 0) row <= row - 1;
+        if (down_p && row < ROWS - 1) row <= row + 1;
+        if (left_p && col > 0) col <= col - 1;
+        if (right_p && col < COLS - 1) col <= col + 1;
+      end
     end
   end
 endmodule
@@ -75,6 +125,7 @@ module key_token_codec (
     emit_bytes  = 48'h00_00_00_00_00_00;
     emit_len    = 3'd0;
 
+    // ASCII printable → pass-through (digits, ops, parens, '.', '%', 'e', etc.)
     if (key_token >= 8'd32 && key_token <= 8'd126) begin
       label_bytes = {32'h00000000, key_token}; // single-char label
       label_len   = 3'd1;
@@ -208,6 +259,11 @@ module keypad_widget #(
     input wire right_p,
     input wire confirm_p,
 
+    // Mouse input
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire       mouse_left,
+
     // pixel render side
     input  wire       clk_pix,  // pixel clock for your OLED pipeline
     output wire [7:0] oled_out,
@@ -237,6 +293,9 @@ module keypad_widget #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .row(focus_row),
       .col(focus_col),
       .select_pulse(select_pulse)
@@ -296,6 +355,8 @@ module keypad_widget #(
       .rst      (rst),
       .focus_row(focus_row),
       .focus_col(focus_col),
+      .mouse_x  (mouse_x),
+      .mouse_y  (mouse_y),
       .oled_out (oled_out)
   );
 endmodule
@@ -306,20 +367,25 @@ module keypad_renderer #(
     parameter integer GRID_COLS = 4,
     parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
-    input  wire       clk_pix,    // 6.25 MHz OLED pixel clock
-    input  wire       rst,        // active-high reset
-    input  wire [2:0] focus_row,  // from input_core
-    input  wire [2:0] focus_col,  // from input_core
-    output wire [7:0] oled_out    // hook to JB[7:0] (or JA/JC)
+    input wire       clk_pix,    // 6.25 MHz OLED pixel clock
+    input wire       rst,        // active-high reset
+    input wire [2:0] focus_row,  // from input_core
+    input wire [2:0] focus_col,  // from input_core
+
+    // Mouse cursor position
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+
+    output wire [7:0] oled_out  // hook to JB[7:0] (or JA/JC)
 );
   // ---- Derived geometry ----
   localparam integer CELL_W = `DISP_W / GRID_COLS;
   localparam integer CELL_H = `DISP_H / GRID_ROWS;
   // ---- x,y from pixel_index ----
-  wire [6:0] x = pixel_index % `DISP_W;
-  wire [6:0] y = pixel_index / `DISP_W;
   wire [12:0] pixel_index;
   wire [15:0] pixel_color;
+  wire [6:0] x = pixel_index % `DISP_W;
+  wire [6:0] y = pixel_index / `DISP_W;
   // ---- Which cell am I in? ----
   wire [2:0] cx = x / CELL_W;  // 0..GRID_COLS-1
   wire [2:0] cy = y / CELL_H;  // 0..GRID_ROWS-1
@@ -427,6 +493,10 @@ module keypad_renderer #(
                ((label_len > 2) && glyph2_on) |
                ((label_len > 3) && glyph3_on) |
                ((label_len > 4) && glyph4_on);
+
+  // Mouse cursor (single pixel)
+  wire cursor_on = (x == mouse_x) && (y == mouse_y);
+
   // ---- Compose ----
   reg [15:0] px;
   always @* begin
@@ -435,6 +505,7 @@ module keypad_renderer #(
     if (is_focus && in_cell) px = `C_FOCUS;
     if (border_on) px = `C_BORDER;
     if (gl_on) px = `C_TEXT;  // text on top
+    if (cursor_on) px = 16'hFFFF;  // White pixel for cursor (on top of everything)
   end
   oled u_oled (
       .clk_6p25m  (clk_pix),

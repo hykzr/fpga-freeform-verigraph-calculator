@@ -73,6 +73,11 @@ module input_core #(
     confirm_p,
     input wire [1:0] kb_sel,  // Changed to 2 bits for 3 pages
 
+    // Mouse input
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire       mouse_left,
+
     // external bulk load (replace buffer)
     input wire                  buf_load,
     input wire [           7:0] buf_load_len,
@@ -114,6 +119,9 @@ module input_core #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .clk_pix(clk_pix),
       .oled_out(oled_out_0),
       .tb_append(ap0),
@@ -140,6 +148,9 @@ module input_core #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .clk_pix(clk_pix),
       .oled_out(oled_out_1),
       .tb_append(ap1),
@@ -166,6 +177,9 @@ module input_core #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .clk_pix(clk_pix),
       .oled_out(oled_out_2),
       .tb_append(ap2),
@@ -480,6 +494,11 @@ module student_input #(
     confirm_p,
     input wire [1:0] kb_sel,  // Changed to 2 bits
 
+    // Mouse input
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire       mouse_left,
+
     // UART
     input  wire rx,
     output wire tx,
@@ -547,6 +566,9 @@ module student_input #(
       .right_p(right_p),
       .confirm_p(confirm_p),
       .kb_sel(kb_sel),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .buf_load(load_buf),
       .buf_load_len(load_len),
       .buf_load_bus(load_bus),
