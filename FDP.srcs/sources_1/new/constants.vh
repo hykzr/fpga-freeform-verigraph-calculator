@@ -2,13 +2,29 @@
 `ifndef EE2026_CONSTANTS_VF
 `define EE2026_CONSTANTS_VF
 
-`define PI_KEY     8'd129
-`define SQRT_KEY   8'd130
-`define SIN_KEY    8'd131
-`define COS_KEY    8'd132
-`define TAN_KEY    8'd133
-`define LN_KEY     8'd134
-`define LOG_KEY    8'd135
+`define SIN_KEY   8'h80
+`define COS_KEY   8'h81
+`define TAN_KEY   8'h82
+`define LOG_KEY   8'h83
+`define LN_KEY    8'h84
+`define SQRT_KEY  8'h85
+`define PI_KEY    8'h86
+
+`define ABS_KEY    8'h87
+`define FLOOR_KEY  8'h88
+`define CEIL_KEY   8'h89
+`define ROUND_KEY  8'h8A
+`define MIN_KEY    8'h8B
+`define MAX_KEY    8'h8C
+`define POW_KEY    8'h8D
+
+// Special bracket glyphs for rendering
+`define CEIL_L_KEY   8'h90  // ⌈
+`define CEIL_R_KEY   8'h91  // ⌉
+`define FLOOR_L_KEY  8'h92  // ⌊
+`define FLOOR_R_KEY  8'h93  // ⌋
+
+`define BACK_KEY   8'h8E  // Backspace/delete last char
 
 // ---- Display geometry (SSD1331/96x64) ----
 `define DISP_W 96

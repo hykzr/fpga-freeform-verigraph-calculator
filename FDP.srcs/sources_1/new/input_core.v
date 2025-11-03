@@ -1,17 +1,18 @@
 `timescale 1ns / 1ps
 `include "constants.vh"
-// text_buffer.v  — supports append (<=4 bytes) and replace (<=MAX_DATA)
+// text_buffer.v  — supports append (<=6 bytes now) and replace (<=MAX_DATA)
 module text_buffer #(
     parameter integer MAX_DATA = 32
 ) (
     input wire clk,
     input wire rst,
     input wire clear,
+    input wire backspace, // Delete last char
 
     // ===== append path (keypad emit) =====
     input wire        append,      // 1-cycle pulse
-    input wire [ 2:0] append_len,  // 0..4
-    input wire [31:0] append_bus,  // byte i at [8*i +: 8], LSB-first
+    input wire [ 2:0] append_len,  // 0..6
+    input wire [47:0] append_bus,  // byte i at [8*i +: 8], LSB-first
 
     // ===== Replace path (external bulk load) =====
     input wire                  load,      // 1-cycle pulse
@@ -37,9 +38,13 @@ module text_buffer #(
         else mem[8*i+:8] <= 8'h00;
       end
       len <= cap_len;
+    end else if (backspace && (len > 0)) begin
+      // Delete last character
+      len <= len - 8'd1;
+      mem[8*(len-1)+:8] <= 8'h00;
     end else if (append && (append_len != 0) && (len < MAX_DATA[7:0])) begin
       // Append: clamp to capacity
-      for (j = 0; j < 4; j = j + 1) begin
+      for (j = 0; j < 6; j = j + 1) begin  // Changed from 4 to 6
         if (j < a_len_eff) mem[8*(len+j)+:8] <= append_bus[8*j+:8];
       end
       len <= len + a_len_eff;
@@ -54,8 +59,9 @@ module input_core #(
     parameter integer REPEAT_INTERVAL_MS = 60,
     parameter integer MAX_DATA = 32,
     parameter integer FONT_SCALE = 2,
-    parameter [8*16-1:0] KB0_LAYOUT = 0,  // Change in student_input
-    parameter [8*16-1:0] KB1_LAYOUT = 0  // Change in student_input
+    parameter [8*16-1:0] KB0_LAYOUT = 0,  // 4x4 layout
+    parameter [8*16-1:0] KB1_LAYOUT = 0,  // 4x4 layout
+    parameter [8*12-1:0] KB2_LAYOUT = 0  // 4x3 layout
 ) (
     input wire clk,
     input wire rst,
@@ -65,7 +71,7 @@ module input_core #(
     left_p,
     right_p,
     confirm_p,
-    input wire kb_sel,
+    input wire [1:0] kb_sel,  // Changed to 2 bits for 3 pages
 
     // external bulk load (replace buffer)
     input wire                  buf_load,
@@ -85,14 +91,16 @@ module input_core #(
 );
   wire [7:0] oled_out_0;
   wire [7:0] oled_out_1;
+  wire [7:0] oled_out_2;
 
-  wire [15:0] col0, col1;
-  wire ap0, ap1;  // append pulse
-  wire [2:0] al0, al1;  // append len
-  wire [31:0] ab0, ab1;  // append bus
-  wire cl0, cl1;  // clear pulse
-  wire eq0, eq1;  // equals pulse
+  wire ap0, ap1, ap2;  // append pulse
+  wire [2:0] al0, al1, al2;  // append len
+  wire [47:0] ab0, ab1, ab2;  // append bus (now 48 bits)
+  wire cl0, cl1, cl2;  // clear pulse
+  wire bk0, bk1, bk2;  // back pulse
+  wire eq0, eq1, eq2;  // equals pulse
 
+  // Page 0: 4x4 basic operations
   keypad_widget #(
       .FONT_SCALE(FONT_SCALE),
       .GRID_ROWS (4),
@@ -112,11 +120,13 @@ module input_core #(
       .tb_append_len(al0),
       .tb_append_bus(ab0),
       .tb_clear(cl0),
+      .tb_back(bk0),
       .is_equal(eq0),
       .focus_row(),
       .focus_col()
   );
 
+  // Page 1: 4x4 trig and advanced functions
   keypad_widget #(
       .FONT_SCALE(FONT_SCALE),
       .GRID_ROWS (4),
@@ -136,17 +146,47 @@ module input_core #(
       .tb_append_len(al1),
       .tb_append_bus(ab1),
       .tb_clear(cl1),
+      .tb_back(bk1),
       .is_equal(eq1),
       .focus_row(),
       .focus_col()
   );
-  wire        tb_append = kb_sel ? ap1 : ap0;
-  wire [ 2:0] tb_append_len = kb_sel ? al1 : al0;
-  wire [31:0] tb_append_bus = kb_sel ? ab1 : ab0;
-  wire        tb_clear_i = kb_sel ? cl1 : cl0;
-  assign is_equal = kb_sel ? eq1 : eq0;
+
+  // Page 2: 4x3 math.h-style functions
+  keypad_widget #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (3),
+      .KB_LAYOUT (KB2_LAYOUT)
+  ) kb2 (
+      .clk(clk),
+      .rst(rst),
+      .up_p(up_p),
+      .down_p(down_p),
+      .left_p(left_p),
+      .right_p(right_p),
+      .confirm_p(confirm_p),
+      .clk_pix(clk_pix),
+      .oled_out(oled_out_2),
+      .tb_append(ap2),
+      .tb_append_len(al2),
+      .tb_append_bus(ab2),
+      .tb_clear(cl2),
+      .tb_back(bk2),
+      .is_equal(eq2),
+      .focus_row(),
+      .focus_col()
+  );
+
+  // Mux outputs based on kb_sel
+  wire        tb_append = (kb_sel == 2'd0) ? ap0 : (kb_sel == 2'd1) ? ap1 : ap2;
+  wire [ 2:0] tb_append_len = (kb_sel == 2'd0) ? al0 : (kb_sel == 2'd1) ? al1 : al2;
+  wire [47:0] tb_append_bus = (kb_sel == 2'd0) ? ab0 : (kb_sel == 2'd1) ? ab1 : ab2;
+  wire        tb_clear_i = (kb_sel == 2'd0) ? cl0 : (kb_sel == 2'd1) ? cl1 : cl2;
+  wire        tb_back_i = (kb_sel == 2'd0) ? bk0 : (kb_sel == 2'd1) ? bk1 : bk2;
+  assign is_equal = (kb_sel == 2'd0) ? eq0 : (kb_sel == 2'd1) ? eq1 : eq2;
   assign is_clear = tb_clear_i;
-  assign oled_out = kb_sel ? oled_out_1 : oled_out_0;
+  assign oled_out = (kb_sel == 2'd0) ? oled_out_0 : (kb_sel == 2'd1) ? oled_out_1 : oled_out_2;
 
   text_buffer #(
       .MAX_DATA(MAX_DATA)
@@ -154,6 +194,7 @@ module input_core #(
       .clk(clk),
       .rst(rst),
       .clear(tb_clear_i),
+      .backspace(tb_back_i),
       .append(tb_append),
       .append_len(tb_append_len),
       .append_bus(tb_append_bus),
@@ -437,7 +478,7 @@ module student_input #(
     left_p,
     right_p,
     confirm_p,
-    input wire kb_sel,
+    input wire [1:0] kb_sel,  // Changed to 2 bits
 
     // UART
     input  wire rx,
@@ -456,9 +497,28 @@ module student_input #(
     output wire [ 7:0] oled_text_out,
     output wire [15:0] debug_led
 );
+  // Page 0: Basic operations (4x4)
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
+
+  // Page 1: Trig and advanced functions (4x4)
   localparam [8*16-1:0] KB1_LAYOUT = {
-    `TAN_KEY, `COS_KEY, `SIN_KEY, "C", `SQRT_KEY, `LN_KEY, `LOG_KEY, `PI_KEY, "^&|~", ".)(x"
+    `TAN_KEY, `COS_KEY, `SIN_KEY, `BACK_KEY, "%><", `PI_KEY, "^&|~", ".)(x"
+  };
+
+  // Page 2: Math.h-style functions (4x3)
+  localparam [8*12-1:0] KB2_LAYOUT = {
+    `CEIL_KEY,
+    `FLOOR_KEY,
+    `BACK_KEY,
+    `ROUND_KEY,
+    `MAX_KEY,
+    `MIN_KEY,
+    `POW_KEY,
+    `SQRT_KEY,
+    `ABS_KEY,
+    "e",
+    `LN_KEY,
+    `LOG_KEY
   };
 
   wire [8*MAX_DATA-1:0] buffer_flat;
@@ -476,7 +536,8 @@ module student_input #(
       .MAX_DATA(MAX_DATA),
       .FONT_SCALE(1),
       .KB0_LAYOUT(KB0_LAYOUT),
-      .KB1_LAYOUT(KB1_LAYOUT)
+      .KB1_LAYOUT(KB1_LAYOUT),
+      .KB2_LAYOUT(KB2_LAYOUT)
   ) core (
       .clk(clk),
       .rst(rst),
@@ -542,6 +603,6 @@ module student_input #(
   assign debug_led[12]   = graph_start;  // 1 = plotter requesting
   assign debug_led[11]   = debug_tx_busy;  // 1 = TX busy
   assign debug_led[10:9] = debug_state[1:0];  // FSM state
-  assign debug_led[8]    = kb_sel;  // keypad select
-  assign debug_led[7:0]  = debug_req_count;  // request counter
+  assign debug_led[8:7]  = kb_sel;  // keypad select (now 2 bits)
+  assign debug_led[6:0]  = debug_req_count[6:0];  // request counter
 endmodule

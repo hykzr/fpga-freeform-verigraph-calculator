@@ -23,7 +23,7 @@ module Top_Student (
   wire mode_zoom = sw[14];
   wire button_for_graph = sw[13];
   wire led_for_output = sw[12];
-  wire kb_select = sw[0];
+  wire [1:0] kb_select = sw[1:0];
 
   wire clk_25M, clk_6p25M, clk_1k;
   clock_divider clkgen (
@@ -71,7 +71,7 @@ module Top_Student (
   ) U_INPUT (
       .clk(clk),
       .rst(rst),
-      .kb_sel(kb_select),
+      .kb_sel(kb_select),  // Now 2 bits
       .up_p(~button_for_graph & up_p),
       .down_p(~button_for_graph & down_p),
       .left_p(~button_for_graph & left_p),

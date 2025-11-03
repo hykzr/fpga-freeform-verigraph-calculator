@@ -58,76 +58,128 @@ endmodule
 module key_token_codec (
     input wire [7:0] key_token,  // from keypad_map (1 byte)
 
-    output reg [8*3-1:0] label_bytes,  // [7:0]=first char to draw, then [15:8], [23:16]
-    output reg [    2:0] label_len,    // 0..3
+    output reg [8*5-1:0] label_bytes,  // [7:0]=first char to draw, then [15:8]... up to 5 chars
+    output reg [    2:0] label_len,    // 0..5
 
-    output reg [8*4-1:0] emit_bytes,  // [7:0]=first byte to emit, then [15:8], [23:16], [31:24]
-    output reg [    2:0] emit_len,    // 0..4
+    output reg [8*6-1:0] emit_bytes,  // [7:0]=first byte to emit, then [15:8]... up to 6 bytes
+    output reg [    2:0] emit_len,    // 0..6
 
     output wire is_clear,  // convenience flags
-    output wire is_equals
+    output wire is_equals,
+    output wire is_back  // backspace key
 );
   // defaults: nothing
   always @* begin
-    label_bytes = 24'h00_00_00;
+    label_bytes = 40'h00_00_00_00_00;
     label_len   = 3'd0;
-    emit_bytes  = 32'h00_00_00_00;
+    emit_bytes  = 48'h00_00_00_00_00_00;
     emit_len    = 3'd0;
 
-    // ASCII printable → pass-through (digits, ops, parens, '.', '%', 'e', etc.)
     if (key_token >= 8'd32 && key_token <= 8'd126) begin
-      label_bytes = {16'h0000, key_token}; // single-char label
+      label_bytes = {32'h00000000, key_token}; // single-char label
       label_len   = 3'd1;
-      emit_bytes  = {24'h000000, key_token}; // single-byte emit
+      emit_bytes  = {40'h0000000000, key_token}; // single-byte emit
       emit_len    = 3'd1;
     end
 
     // Non-ASCII specials override here
     case (key_token)
-      // ===== functions: lowercase labels, emit with '(' =====
+      // ===== Page 2 functions: lowercase labels, emit with '(' =====
       `SIN_KEY: begin
-        label_bytes = {"n","i","s"};  // "sin" (LSB-first)
+        label_bytes = {16'h0000, "n","i","s"};  // "sin"
         label_len   = 3'd3;
-        emit_bytes  = {"(", "n","i","s"}; // "sin("
+        emit_bytes  = {16'h0000, "(", "n","i","s"}; // "sin("
         emit_len    = 3'd4;
       end
       `COS_KEY: begin
-        label_bytes = {"s","o","c"};  // "cos"
+        label_bytes = {16'h0000, "s","o","c"};  // "cos"
         label_len   = 3'd3;
-        emit_bytes  = {"(", "s","o","c"}; // "cos("
+        emit_bytes  = {16'h0000, "(", "s","o","c"}; // "cos("
         emit_len    = 3'd4;
       end
       `TAN_KEY: begin
-        label_bytes = {"n","a","t"};  // "tan"
+        label_bytes = {16'h0000, "n","a","t"};  // "tan"
         label_len   = 3'd3;
-        emit_bytes  = {"(", "n","a","t"}; // "tan("
+        emit_bytes  = {16'h0000, "(", "n","a","t"}; // "tan("
         emit_len    = 3'd4;
       end
       `LN_KEY: begin
-        label_bytes = {8'h00,"n","l"}; // "ln"
+        label_bytes = {24'h000000,"n","l"}; // "ln"
         label_len   = 3'd2;
-        emit_bytes  = {8'h00, "(", "n","l"}; // "ln("
+        emit_bytes  = {24'h000000, "(", "n","l"}; // "ln("
         emit_len    = 3'd3;
       end
       `LOG_KEY: begin
-        label_bytes = {"g","o","l"}; // "log"
+        label_bytes = {16'h0000, "g","o","l"}; // "log"
         label_len   = 3'd3;
-        emit_bytes  = {"(", "g","o","l"}; // "log("
+        emit_bytes  = {16'h0000, "(", "g","o","l"}; // "log("
+        emit_len    = 3'd4;
+      end
+
+      // ===== Page 3 functions: display math notation, emit function names =====
+      `ABS_KEY: begin
+        label_bytes = {16'h0000, "|","x","|"};  // |x|
+        label_len   = 3'd3;
+        emit_bytes  = {16'h0000, "(", "s","b","a"}; // "abs("
+        emit_len    = 3'd4;
+      end
+      `FLOOR_KEY: begin
+        label_bytes = {8'h00, `FLOOR_R_KEY, "x", `FLOOR_L_KEY};  // ⌊x⌋
+        label_len   = 3'd4;
+        emit_bytes  = {"(", "r","o","o","l","f"}; // "floor("
+        emit_len    = 3'd6;
+      end
+      `CEIL_KEY: begin
+        label_bytes = {8'h00, `CEIL_R_KEY, "x", `CEIL_L_KEY};  // ⌈x⌉
+        label_len   = 3'd4;
+        emit_bytes  = {8'h00, "(", "l","i","e","c"}; // "ceil("
+        emit_len    = 3'd5;
+      end
+      `ROUND_KEY: begin
+        label_bytes = "dnuor";  // "round"
+        label_len   = 3'd5;
+        emit_bytes  = {"(", "d","n","u","o","r"}; // "round("
+        emit_len    = 3'd6;
+      end
+      `MIN_KEY: begin
+        label_bytes = {16'h0000, "n","i","m"};  // "min"
+        label_len   = 3'd3;
+        emit_bytes  = {16'h0000, "(", "n","i","m"}; // "min("
+        emit_len    = 3'd4;
+      end
+      `MAX_KEY: begin
+        label_bytes = {16'h0000, "x","a","m"};  // "max"
+        label_len   = 3'd3;
+        emit_bytes  = {16'h0000, "(", "x","a","m"}; // "max("
+        emit_len    = 3'd4;
+      end
+      `POW_KEY: begin
+        label_bytes = {16'h0000, "w","o","p"};  // "pow"
+        label_len   = 3'd3;
+        emit_bytes  = {16'h0000, "(", "w","o","p"}; // "pow("
         emit_len    = 3'd4;
       end
 
       // ===== constants/symbols: draw the glyph, emit token (NOT text) =====
       `PI_KEY: begin
-        label_bytes = {16'h0000, `PI_KEY}; // single-glyph label
+        label_bytes = {32'h00000000, `PI_KEY}; // single-glyph label
         label_len   = 3'd1;
-        emit_bytes  = {24'h000000, `PI_KEY}; // emit token
+        emit_bytes  = {40'h0000000000, `PI_KEY}; // emit token
         emit_len    = 3'd1;
       end
       `SQRT_KEY: begin
-        label_bytes = {16'h0000, `SQRT_KEY}; // single-glyph label
+        label_bytes = {32'h00000000, `SQRT_KEY}; // single-glyph label
         label_len   = 3'd1;
-        emit_bytes  = {24'h000000, `SQRT_KEY}; // emit token (NOT "sqrt(")
+        emit_bytes  = {40'h0000000000, `SQRT_KEY}; // emit token (NOT "sqrt(")
         emit_len    = 3'd1;
+      end
+
+      // ===== Special keys =====
+      `BACK_KEY: begin
+        label_bytes = {32'h00000000, `BACK_KEY}; // special glyph for backspace
+        label_len   = 3'd1;
+        emit_bytes  = 48'h000000000000; // no emit (handled separately)
+        emit_len    = 3'd0;
       end
 
       default: ;  // keep whatever the ASCII default set
@@ -136,6 +188,7 @@ module key_token_codec (
 
   assign is_clear  = (key_token == "C");
   assign is_equals = (key_token == "=");
+  assign is_back   = (key_token == `BACK_KEY);
 endmodule
 
 module keypad_widget #(
@@ -161,9 +214,10 @@ module keypad_widget #(
 
     // emit-to-buffer interface (append path)
     output wire        tb_append,      // pulse: append emit_bytes
-    output wire [ 2:0] tb_append_len,  // 0..4
-    output wire [31:0] tb_append_bus,  // bytes LSB-first
+    output wire [ 2:0] tb_append_len,  // 0..6
+    output wire [47:0] tb_append_bus,  // bytes LSB-first (6 bytes)
     output wire        tb_clear,       // pulse when 'C' pressed
+    output wire        tb_back,        // pulse when backspace pressed
     output wire        is_equal,       // pulse when '=' pressed
 
     // (optional) expose focus for other UI uses
@@ -204,11 +258,11 @@ module keypad_widget #(
   );
 
   // -------- Token → {label, emit} --------
-  wire [23:0] label_bytes;
+  wire [39:0] label_bytes;
   wire [ 2:0] label_len;
-  wire [31:0] emit_bytes;
+  wire [47:0] emit_bytes;
   wire [ 2:0] emit_len;
-  wire k_is_eq, k_is_clr;
+  wire k_is_eq, k_is_clr, k_is_back;
 
   key_token_codec u_codec (
       .key_token(token),
@@ -217,15 +271,17 @@ module keypad_widget #(
       .emit_bytes(emit_bytes),
       .emit_len(emit_len),
       .is_clear(k_is_clr),
-      .is_equals(k_is_eq)
+      .is_equals(k_is_eq),
+      .is_back(k_is_back)
   );
 
   // -------- Emit-to-buffer signals (append/clear/equals) --------
-  assign tb_append     = select_pulse && (!k_is_eq) && (!k_is_clr) && (emit_len != 0);
+  assign tb_append = select_pulse && (!k_is_eq) && (!k_is_clr) && (!k_is_back) && (emit_len != 0);
   assign tb_append_len = emit_len;
   assign tb_append_bus = emit_bytes;
-  assign tb_clear      = select_pulse && k_is_clr;
-  assign is_equal      = select_pulse && k_is_eq;
+  assign tb_clear = select_pulse && k_is_clr;
+  assign tb_back = select_pulse && k_is_back;
+  assign is_equal = select_pulse && k_is_eq;
 
   // -------- Per-pixel render (uses label mapping for every cell) --------
   // We reuse your renderer that internally calls keypad_map and key_token_codec per cell.
@@ -241,5 +297,150 @@ module keypad_widget #(
       .focus_row(focus_row),
       .focus_col(focus_col),
       .oled_out (oled_out)
+  );
+endmodule
+
+module keypad_renderer #(
+    parameter integer FONT_SCALE = 2,
+    parameter integer GRID_ROWS = 4,
+    parameter integer GRID_COLS = 4,
+    parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
+) (
+    input  wire       clk_pix,    // 6.25 MHz OLED pixel clock
+    input  wire       rst,        // active-high reset
+    input  wire [2:0] focus_row,  // from input_core
+    input  wire [2:0] focus_col,  // from input_core
+    output wire [7:0] oled_out    // hook to JB[7:0] (or JA/JC)
+);
+  // ---- Derived geometry ----
+  localparam integer CELL_W = `DISP_W / GRID_COLS;
+  localparam integer CELL_H = `DISP_H / GRID_ROWS;
+  // ---- x,y from pixel_index ----
+  wire [6:0] x = pixel_index % `DISP_W;
+  wire [6:0] y = pixel_index / `DISP_W;
+  wire [12:0] pixel_index;
+  wire [15:0] pixel_color;
+  // ---- Which cell am I in? ----
+  wire [2:0] cx = x / CELL_W;  // 0..GRID_COLS-1
+  wire [2:0] cy = y / CELL_H;  // 0..GRID_ROWS-1
+  wire [6:0] ox = cx * CELL_W;
+  wire [6:0] oy = cy * CELL_H;
+  // ---- Base layers ----
+  wire in_cell = (x >= ox) && (y >= oy) && (x < ox + CELL_W) && (y < oy + CELL_H);
+  wire border_on = in_cell && ( y==oy || y==(oy+CELL_H-1) || x==ox || x==(ox+CELL_W-1) );
+  wire is_focus = (cx == focus_col) && (cy == focus_row);
+  // ---- Get per-cell token (ASCII or *_KEY) from layout ----
+  wire [7:0] cell_token;
+  keypad_map #(
+      .GRID_ROWS(GRID_ROWS),
+      .GRID_COLS(GRID_COLS),
+      .KB_LAYOUT(KB_LAYOUT)
+  ) LAB (
+      .row(cy),
+      .col(cx),
+      .ascii(cell_token),
+      .is_equals(),
+      .is_clear()
+  );
+  // ---- Token -> label (up to 5 chars), no need for emit here ----
+  wire [39:0] label_bytes;  // [7:0]=char0 (left), [15:8]=char1, ..., [39:32]=char4
+  wire [ 2:0] label_len;  // 0..5
+  key_token_codec CODEC (
+      .key_token(cell_token),
+      .label_bytes(label_bytes),
+      .label_len(label_len),
+      .emit_bytes(),
+      .emit_len(),
+      .is_clear(),
+      .is_equals(),
+      .is_back()
+  );
+  // ---- Glyph group placement (5x7 scaled) ----
+  localparam [6:0] GW = 5 * FONT_SCALE;  // glyph width
+  localparam [6:0] GH = 7 * FONT_SCALE;  // glyph height
+  localparam [6:0] GAP = FONT_SCALE;  // spacing between glyphs
+  wire [9:0] group_w_chars = label_len * GW;
+  wire [9:0] group_w_gaps = (label_len == 0) ? 10'd0 : (label_len - 1) * GAP;
+  wire [9:0] group_w_total = group_w_chars + group_w_gaps;
+  wire [6:0] gx0 = ox + (CELL_W - group_w_total[6:0]) / 2;  // leftmost glyph x
+  wire [6:0] gy = oy + (CELL_H - GH) / 2;
+  // ---- Up to 5 glyphs side-by-side ----
+  wire [7:0] ch0 = label_bytes[7:0];
+  wire [7:0] ch1 = label_bytes[15:8];
+  wire [7:0] ch2 = label_bytes[23:16];
+  wire [7:0] ch3 = label_bytes[31:24];
+  wire [7:0] ch4 = label_bytes[39:32];
+  wire glyph0_on, glyph1_on, glyph2_on, glyph3_on, glyph4_on;
+  glyph_blitter #(
+      .FONT_SCALE(FONT_SCALE)
+  ) GLY0 (
+      .x    (x),
+      .y    (y),
+      .gx   (gx0),
+      .gy   (gy),
+      .ascii(ch0),       // pass full 8-bit (supports PI/SQRT/bracket tokens)
+      .on   (glyph0_on)
+  );
+  glyph_blitter #(
+      .FONT_SCALE(FONT_SCALE)
+  ) GLY1 (
+      .x(x),
+      .y(y),
+      .gx(gx0 + GW + GAP),
+      .gy(gy),
+      .ascii(ch1),
+      .on(glyph1_on)
+  );
+  glyph_blitter #(
+      .FONT_SCALE(FONT_SCALE)
+  ) GLY2 (
+      .x(x),
+      .y(y),
+      .gx(gx0 + 2 * (GW + GAP)),
+      .gy(gy),
+      .ascii(ch2),
+      .on(glyph2_on)
+  );
+  glyph_blitter #(
+      .FONT_SCALE(FONT_SCALE)
+  ) GLY3 (
+      .x(x),
+      .y(y),
+      .gx(gx0 + 3 * (GW + GAP)),
+      .gy(gy),
+      .ascii(ch3),
+      .on(glyph3_on)
+  );
+  glyph_blitter #(
+      .FONT_SCALE(FONT_SCALE)
+  ) GLY4 (
+      .x(x),
+      .y(y),
+      .gx(gx0 + 4 * (GW + GAP)),
+      .gy(gy),
+      .ascii(ch4),
+      .on(glyph4_on)
+  );
+  // Only enable glyphs 0..label_len-1
+  wire gl_on = ((label_len > 0) && glyph0_on) |
+               ((label_len > 1) && glyph1_on) |
+               ((label_len > 2) && glyph2_on) |
+               ((label_len > 3) && glyph3_on) |
+               ((label_len > 4) && glyph4_on);
+  // ---- Compose ----
+  reg [15:0] px;
+  always @* begin
+    px = `C_BG;
+    if (in_cell) px = `C_BTN;
+    if (is_focus && in_cell) px = `C_FOCUS;
+    if (border_on) px = `C_BORDER;
+    if (gl_on) px = `C_TEXT;  // text on top
+  end
+  oled u_oled (
+      .clk_6p25m  (clk_pix),
+      .rst        (rst),
+      .pixel_color(px),
+      .oled_out   (oled_out),
+      .pixel_index(pixel_index)
   );
 endmodule
