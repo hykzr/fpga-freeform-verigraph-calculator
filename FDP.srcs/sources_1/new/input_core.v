@@ -221,33 +221,9 @@ module input_core #(
 
 endmodule
 
-// Detect 'x' in expression
-module has_x_detector #(
-    parameter integer MAX_DATA = 32
-) (
-    input wire [8*MAX_DATA-1:0] expr_bus,
-    input wire [7:0] expr_len,
-    output wire has_x
-);
-  integer i;
-  reg found_x;
-
-  always @* begin
-    found_x = 1'b0;
-    for (i = 0; i < MAX_DATA; i = i + 1) begin
-      if (i < expr_len && expr_bus[8*i+:8] == 8'h78) begin  // 'x'
-        found_x = 1'b1;
-      end
-    end
-  end
-
-  assign has_x = found_x;
-endmodule
-
 module compute_link #(
-    parameter integer CLK_HZ    = 100_000_000,
-    parameter integer BAUD_RATE = 115200,
-    parameter integer MAX_DATA  = 32
+    parameter integer CLK_HZ   = 100_000_000,
+    parameter integer MAX_DATA = 32
 ) (
     input wire clk,
     input wire rst,
@@ -258,11 +234,7 @@ module compute_link #(
     input wire [           7:0] expr_len,
     input wire [8*MAX_DATA-1:0] expr_bus,
 
-    // UART
-    input  wire rx,
-    output wire tx,
-
-    // To text_buffer (normal mode)
+    // To text_buffer
     output reg                  load_buf,
     output reg [           7:0] load_len,
     output reg [8*MAX_DATA-1:0] load_bus,
@@ -277,85 +249,64 @@ module compute_link #(
 
     // Debug outputs
     output wire [7:0] debug_state,
-    output wire debug_tx_busy,
     output wire [7:0] debug_req_count
 );
 
-  // Detect x
-  wire expr_has_x;
-  has_x_detector #(
-      .MAX_DATA(MAX_DATA)
-  ) x_detect (
-      .expr_bus(expr_bus),
-      .expr_len(expr_len),
-      .has_x(expr_has_x)
-  );
+  reg         [           7:0] stored_expr_len;
+  reg         [8*MAX_DATA-1:0] stored_expr_bus;
 
-  // Store expression for graph mode
-  reg  [           7:0] stored_expr_len;
-  reg  [8*MAX_DATA-1:0] stored_expr_bus;
+  // Expression evaluator
+  reg                          eval_start;
+  wire signed [          31:0] eval_result;
+  wire        [           7:0] eval_error;
+  wire                         eval_done;
 
-  // ============ TX ============
-  reg                   ptx_start;
-  reg  [           7:0] ptx_cmd;
-  reg  [           7:0] ptx_len;
-  reg  [8*MAX_DATA-1:0] ptx_bus;
-  wire                  ptx_busy;
-  reg                   graph_y_ready_internal;
-  assign graph_y_ready = graph_y_ready_internal & ~graph_start;
-
-  proto_tx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) TX (
+  expression_evaluator #(
+      .MAX_LEN(MAX_DATA),
+      .MAX_TOKENS(32)
+  ) evaluator (
       .clk(clk),
       .rst(rst),
-      .start(ptx_start),
-      .cmd(ptx_cmd),
-      .data_len(ptx_len),
-      .data_bus(ptx_bus),
-      .busy(ptx_busy),
-      .tx(tx)
+      .start(eval_start),
+      .expr_in(stored_expr_bus),
+      .expr_len(stored_expr_len),
+      .x_value(graph_x_q16_16),
+      .result(eval_result),
+      .error_flags(eval_error),
+      .done(eval_done),
+      .debug_first_reg()
   );
 
-  // ============ RX ============
-  wire prx_valid, prx_chk;
-  wire [7:0] prx_cmd;
-  wire [7:0] prx_len;
-  wire [8*MAX_DATA-1:0] prx_bus;
+  // Integer to ASCII converter
+  reg conv_start;
+  wire conv_done;
+  wire [7:0] conv_len;
+  wire [8*MAX_DATA-1:0] conv_bus;
 
-  proto_rx #(
-      .CLK_FREQ (CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
-      .MAX_DATA (MAX_DATA)
-  ) RX (
+  int32_to_ascii #(
+      .MAX_LEN(MAX_DATA)
+  ) converter (
       .clk(clk),
       .rst(rst),
-      .rx(rx),
-      .frame_valid(prx_valid),
-      .chk_ok(prx_chk),
-      .cmd(prx_cmd),
-      .data_len(prx_len),
-      .data_bus(prx_bus)
+      .start(conv_start),
+      .value(eval_result),
+      .done(conv_done),
+      .out_len(conv_len),
+      .out_bus(conv_bus)
   );
 
-  // Extract y value from graph response (little-endian)
-  wire signed [31:0] rx_y_q16_16 = {
-    prx_bus[8*3+:8], prx_bus[8*2+:8], prx_bus[8*1+:8], prx_bus[8*0+:8]
-  };
-
-  // ============ State Machine ============
   localparam S_IDLE = 3'd0;
-  localparam S_WAIT_TX_DONE = 3'd1;
-  localparam S_WAIT_RX = 3'd2;
+  localparam S_WAIT_EVAL = 3'd1;
+  localparam S_CONVERT = 3'd2;
+  localparam S_WAIT_CONV = 3'd3;
 
   reg [2:0] state;
   reg pending_clear, pending_compute;
   reg [7:0] req_count;
+  reg graph_y_ready_internal;
 
+  assign graph_y_ready = graph_y_ready_internal & ~graph_start;
   assign debug_state = {5'd0, state};
-  assign debug_tx_busy = ptx_busy;
   assign debug_req_count = req_count;
 
   integer i;
@@ -363,10 +314,8 @@ module compute_link #(
   always @(posedge clk) begin
     if (rst) begin
       state <= S_IDLE;
-      ptx_start <= 1'b0;
-      ptx_cmd <= 8'h00;
-      ptx_len <= 8'd0;
-      ptx_bus <= 0;
+      eval_start <= 1'b0;
+      conv_start <= 1'b0;
       pending_clear <= 1'b0;
       pending_compute <= 1'b0;
       load_buf <= 1'b0;
@@ -380,12 +329,11 @@ module compute_link #(
       graph_y_ready_internal <= 1'b0;
       req_count <= 8'd0;
     end else begin
-      // Default: clear one-shot signals
-      ptx_start <= 1'b0;
+      eval_start <= 1'b0;
+      conv_start <= 1'b0;
       load_buf <= 1'b0;
       graph_y_valid <= 1'b0;
 
-      // Latch triggers
       if (is_clear) begin
         pending_clear <= 1'b1;
         graph_mode <= 1'b0;
@@ -395,93 +343,62 @@ module compute_link #(
 
       case (state)
         S_IDLE: begin
-          // In graph mode, always ready
           if (graph_mode) begin
             graph_y_ready_internal <= 1'b1;
-
-            // When plotter requests a point
             if (graph_start) begin
-              // Build and send CMD_GRAPH_EVAL
-              ptx_cmd <= `CMD_GRAPH_EVAL;
-              ptx_len <= stored_expr_len + 8'd5;
-
-              // Pack: [expr_len][expr...][x_q16_16 little-endian]
-              ptx_bus[8*0+:8] <= stored_expr_len;
-              for (i = 0; i < MAX_DATA - 5; i = i + 1) begin
-                if (i < stored_expr_len) ptx_bus[8*(i+1)+:8] <= stored_expr_bus[8*i+:8];
-                else ptx_bus[8*(i+1)+:8] <= 8'h00;
-              end
-              ptx_bus[8*(stored_expr_len+1)+:8] <= graph_x_q16_16[7:0];
-              ptx_bus[8*(stored_expr_len+2)+:8] <= graph_x_q16_16[15:8];
-              ptx_bus[8*(stored_expr_len+3)+:8] <= graph_x_q16_16[23:16];
-              ptx_bus[8*(stored_expr_len+4)+:8] <= graph_x_q16_16[31:24];
-
-              ptx_start <= 1'b1;
+              eval_start <= 1'b1;
               req_count <= req_count + 8'd1;
-              graph_y_ready_internal <= 1'b0;  // Not ready while processing
-              state <= S_WAIT_TX_DONE;
+              graph_y_ready_internal <= 1'b0;
+              state <= S_WAIT_EVAL;
             end
-          end  // Normal mode operations
-          else if (!ptx_busy) begin
-            if (pending_clear) begin
-              ptx_cmd <= `CMD_CLEAR;
-              ptx_len <= 8'd0;
-              ptx_start <= 1'b1;
-              pending_clear <= 1'b0;
-            end else if (pending_compute) begin
-              if (expr_has_x) begin
-                // Enter graph mode
-                graph_mode <= 1'b1;
-                stored_expr_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
-                stored_expr_bus <= expr_bus;
-                pending_compute <= 1'b0;
-                req_count <= 8'd0;
-                graph_y_ready_internal <= 1'b1;  // Immediately ready
-              end else begin
-                // Normal compute
-                ptx_cmd <= `CMD_COMPUTE;
-                ptx_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
-                ptx_bus <= expr_bus;
-                ptx_start <= 1'b1;
-                pending_compute <= 1'b0;
-              end
-            end
+          end else if (pending_clear) begin
+            pending_clear <= 1'b0;
+          end else if (pending_compute) begin
+            graph_mode <= 1'b1;
+            stored_expr_len <= (expr_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : expr_len;
+            stored_expr_bus <= expr_bus;
+            pending_compute <= 1'b0;
+            req_count <= 8'd0;
+            graph_y_ready_internal <= 1'b1;
+            // Evaluate once for display
+            eval_start <= 1'b1;
+            state <= S_CONVERT;
           end
         end
 
-        S_WAIT_TX_DONE: begin
-          // Wait for TX to finish
-          if (!ptx_busy && !ptx_start) begin
-            state <= S_WAIT_RX;
+        S_WAIT_EVAL: begin
+          if (eval_done) begin
+            graph_y_q16_16 <= eval_result << 16;  // Integer to Q16.16
+            graph_y_valid <= 1'b1;
+            graph_y_ready_internal <= 1'b1;
+            state <= S_IDLE;
           end
         end
 
-        S_WAIT_RX: begin
-          // Wait for response
-          if (prx_valid && prx_chk && prx_cmd == `CMD_GRAPH_EVAL) begin
-            graph_y_q16_16 <= rx_y_q16_16;
-            graph_y_valid <= 1'b1;  // Present result
-            graph_y_ready_internal <= 1'b1;  // Ready for next (will be sampled next cycle)
+        S_CONVERT: begin
+          if (eval_done) begin
+            conv_start <= 1'b1;
+            state <= S_WAIT_CONV;
+          end
+        end
+
+        S_WAIT_CONV: begin
+          if (conv_done) begin
+            load_buf <= 1'b1;
+            load_len <= conv_len;
+            load_bus <= conv_bus;
             state <= S_IDLE;
           end
         end
 
         default: state <= S_IDLE;
       endcase
-
-      // Handle normal mode responses
-      if (prx_valid && prx_chk && prx_cmd == `CMD_RESULT && !graph_mode) begin
-        load_len <= (prx_len > MAX_DATA[7:0]) ? MAX_DATA[7:0] : prx_len;
-        load_bus <= prx_bus;
-        load_buf <= 1'b1;
-      end
     end
   end
 endmodule
 
 module student_input #(
     parameter integer CLK_HZ     = 100_000_000,
-    parameter integer BAUD_RATE  = 115200,
     parameter integer MAX_DATA   = 32,
     parameter integer FONT_SCALE = 2
 ) (
@@ -492,16 +409,12 @@ module student_input #(
     left_p,
     right_p,
     confirm_p,
-    input wire [1:0] kb_sel,  // Changed to 2 bits
+    input wire [1:0] kb_sel,
 
     // Mouse input
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
     input wire       mouse_left,
-
-    // UART
-    input  wire rx,
-    output wire tx,
 
     // Graph interface
     input  wire               graph_start,
@@ -516,15 +429,12 @@ module student_input #(
     output wire [ 7:0] oled_text_out,
     output wire [15:0] debug_led
 );
-  // Page 0: Basic operations (4x4)
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
 
-  // Page 1: Trig and advanced functions (4x4)
   localparam [8*16-1:0] KB1_LAYOUT = {
     `TAN_KEY, `COS_KEY, `SIN_KEY, `BACK_KEY, "%><", `PI_KEY, "^&|~", ".)(x"
   };
 
-  // Page 2: Math.h-style functions (4x3)
   localparam [8*12-1:0] KB2_LAYOUT = {
     `CEIL_KEY,
     `FLOOR_KEY,
@@ -547,7 +457,6 @@ module student_input #(
   wire [           7:0] load_len;
   wire [8*MAX_DATA-1:0] load_bus;
   wire [           7:0] debug_state;
-  wire                  debug_tx_busy;
   wire [           7:0] debug_req_count;
 
   input_core #(
@@ -581,8 +490,7 @@ module student_input #(
   );
 
   compute_link #(
-      .CLK_HZ(CLK_HZ),
-      .BAUD_RATE(BAUD_RATE),
+      .CLK_HZ  (CLK_HZ),
       .MAX_DATA(MAX_DATA)
   ) link (
       .clk(clk),
@@ -591,8 +499,6 @@ module student_input #(
       .is_clear(is_clear),
       .expr_len(buffer_len8),
       .expr_bus(buffer_flat),
-      .rx(rx),
-      .tx(tx),
       .load_buf(load_buf),
       .load_len(load_len),
       .load_bus(load_bus),
@@ -603,7 +509,6 @@ module student_input #(
       .graph_y_ready(graph_y_ready),
       .graph_mode(graph_mode),
       .debug_state(debug_state),
-      .debug_tx_busy(debug_tx_busy),
       .debug_req_count(debug_req_count)
   );
 
@@ -618,13 +523,12 @@ module student_input #(
       .text_bus(buffer_flat)
   );
 
-  // Debug LED mapping
-  assign debug_led[15]   = graph_mode;  // 1 = graph mode
-  assign debug_led[14]   = graph_y_ready;  // 1 = ready
-  assign debug_led[13]   = graph_y_valid;  // 1 = valid (pulses)
-  assign debug_led[12]   = graph_start;  // 1 = plotter requesting
-  assign debug_led[11]   = debug_tx_busy;  // 1 = TX busy
-  assign debug_led[10:9] = debug_state[1:0];  // FSM state
-  assign debug_led[8:7]  = kb_sel;  // keypad select (now 2 bits)
-  assign debug_led[6:0]  = debug_req_count[6:0];  // request counter
+  assign debug_led[15]   = graph_mode;
+  assign debug_led[14]   = graph_y_ready;
+  assign debug_led[13]   = graph_y_valid;
+  assign debug_led[12]   = graph_start;
+  assign debug_led[11]   = 1'b0;
+  assign debug_led[10:9] = debug_state[1:0];
+  assign debug_led[8:7]  = kb_sel;
+  assign debug_led[6:0]  = debug_req_count[6:0];
 endmodule

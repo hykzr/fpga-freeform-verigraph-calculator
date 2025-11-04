@@ -1,51 +1,63 @@
 `include "constants.vh"
 
 module viewport_ctrl (
-    input  wire              clk,
-    input  wire              rst,
-    input  wire              pulse_left,
+    input  wire               clk,
+    input  wire               rst,
+    input  wire               pulse_left,
     pulse_right,
-    input  wire              pulse_up,
+    input  wire               pulse_up,
     pulse_down,
-    input  wire              pulse_zoom_in,
+    input  wire               pulse_zoom_in,
     pulse_zoom_out,
-    output reg signed [ 3:0] zoom_exp,         // range [-3 .. +4]
-    output reg signed [31:0] offset_x_q16_16,
-    output reg signed [31:0] offset_y_q16_16
+    input  wire               drag_active,
+    input  wire signed [ 7:0] drag_delta_x_px,
+    input  wire signed [ 6:0] drag_delta_y_px,
+    output reg signed  [ 3:0] zoom_exp,
+    output reg signed  [31:0] offset_x_q16_16,
+    output reg signed  [31:0] offset_y_q16_16
 );
-  // pan step = 8 pixels (converted to world by >> zoom_exp)
   localparam signed [31:0] PAN_STEP_PIX_Q = `TO_Q16_16(2);
 
-  // combinational pan step in world (depends only on zoom_exp)
   wire signed [31:0] pan_step_world_q16_pos;
   wire signed [31:0] pan_step_world_q16_neg;
   wire        [ 3:0] zoom_exp_neg = -zoom_exp[3:0];
 
-  assign pan_step_world_q16_pos = PAN_STEP_PIX_Q >>> zoom_exp;  // exp >= 0
-  assign pan_step_world_q16_neg = PAN_STEP_PIX_Q <<< zoom_exp_neg;  // exp <  0
+  assign pan_step_world_q16_pos = PAN_STEP_PIX_Q >>> zoom_exp;
+  assign pan_step_world_q16_neg = PAN_STEP_PIX_Q <<< zoom_exp_neg;
 
   wire signed [31:0] pan_step_world_q16 =
       (zoom_exp >= 0) ? pan_step_world_q16_pos : pan_step_world_q16_neg;
 
-  // sequential state updates
+  // Convert drag deltas from screen pixels to world coordinates
+  wire signed [31:0] drag_dx_q16 = $signed(drag_delta_x_px) << 16;
+  wire signed [31:0] drag_dy_q16 = $signed(drag_delta_y_px) << 16;
+  wire signed [31:0] drag_world_dx_q16 = (zoom_exp >= 0) ? 
+                                          (drag_dx_q16 >>> zoom_exp) : 
+                                          (drag_dx_q16 <<< zoom_exp_neg);
+  wire signed [31:0] drag_world_dy_q16 = (zoom_exp >= 0) ? 
+                                          (drag_dy_q16 >>> zoom_exp) : 
+                                          (drag_dy_q16 <<< zoom_exp_neg);
+
   always @(posedge clk) begin
     if (rst) begin
-      zoom_exp        <= 4'sd0;  // 1x
+      zoom_exp        <= 4'sd0;
       offset_x_q16_16 <= 32'sd0;
       offset_y_q16_16 <= 32'sd0;
     end else begin
-      // Prioritise zoom this cycle (don't pan on same tick as zoom)
       if (pulse_zoom_in && (zoom_exp < 4'sd4) && !pulse_zoom_out) begin
         zoom_exp        <= zoom_exp + 4'sd1;
-        // keep world origin's screen position fixed
-        offset_x_q16_16 <= offset_x_q16_16 >>> 1;  // divide by 2
+        offset_x_q16_16 <= offset_x_q16_16 >>> 1;
         offset_y_q16_16 <= offset_y_q16_16 >>> 1;
       end else if (pulse_zoom_out && (zoom_exp > -4'sd3) && !pulse_zoom_in) begin
         zoom_exp        <= zoom_exp - 4'sd1;
-        offset_x_q16_16 <= offset_x_q16_16 <<< 1;  // multiply by 2
+        offset_x_q16_16 <= offset_x_q16_16 <<< 1;
         offset_y_q16_16 <= offset_y_q16_16 <<< 1;
+      end else if (drag_active && (drag_delta_x_px != 0 || drag_delta_y_px != 0)) begin
+        // Apply drag: move graph opposite to mouse movement
+        offset_x_q16_16 <= offset_x_q16_16 - drag_world_dx_q16;
+        offset_y_q16_16 <= offset_y_q16_16 + drag_world_dy_q16;
       end else begin
-        // pan (same as before)
+        // Button-based pan
         if (pulse_left) offset_x_q16_16 <= offset_x_q16_16 - pan_step_world_q16;
         if (pulse_right) offset_x_q16_16 <= offset_x_q16_16 + pan_step_world_q16;
         if (pulse_up) offset_y_q16_16 <= offset_y_q16_16 + pan_step_world_q16;
@@ -204,70 +216,85 @@ module mapper_plot_points (
 
 endmodule
 
-// Mouse-based graph control
-// Generates pulses when mouse is at screen edges or middle button pressed
-module mouse_graph_ctrl (
+module mouse_drag_ctrl (
     input wire clk,
     input wire rst,
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
+    input wire mouse_left,
     input wire mouse_middle,
-    output reg move_up,
-    output reg move_down,
-    output reg move_left,
-    output reg move_right,
+    output reg drag_active,
+    output reg signed [7:0] drag_delta_x,
+    output reg signed [6:0] drag_delta_y,
     output reg zoom_in,
     output reg zoom_out
 );
-  // Edge detection zones (pixels from edge)
-  localparam EDGE_SIZE = 8;
-  localparam DISP_W = 96;
-  localparam DISP_H = 64;
+  reg [6:0] drag_start_x;
+  reg [5:0] drag_start_y;
+  reg [6:0] last_x;
+  reg [5:0] last_y;
+  reg drag_was_active;
 
-  // Detect mouse in edge zones
-  wire in_left_edge = (mouse_x < EDGE_SIZE);
-  wire in_right_edge = (mouse_x >= (DISP_W - EDGE_SIZE));
-  wire in_top_edge = (mouse_y < EDGE_SIZE);
-  wire in_bottom_edge = (mouse_y >= (DISP_H - EDGE_SIZE));
-
-  // Generate pulses at lower rate (every N clocks)
-  reg [19:0] pulse_counter;
-  wire pulse_tick = (pulse_counter == 0);
+  // Scroll wheel zoom detection
+  reg [19:0] zoom_counter;
+  wire zoom_tick = (zoom_counter == 0);
 
   always @(posedge clk) begin
     if (rst) begin
-      pulse_counter <= 0;
-      move_up <= 0;
-      move_down <= 0;
-      move_left <= 0;
-      move_right <= 0;
+      drag_active <= 0;
+      drag_delta_x <= 0;
+      drag_delta_y <= 0;
+      drag_start_x <= 0;
+      drag_start_y <= 0;
+      last_x <= 0;
+      last_y <= 0;
+      drag_was_active <= 0;
       zoom_in <= 0;
       zoom_out <= 0;
+      zoom_counter <= 0;
     end else begin
-      // Counter for pulse generation (about 5 Hz at 100 MHz)
-      if (pulse_counter == 20_000_000) pulse_counter <= 0;
-      else pulse_counter <= pulse_counter + 1;
+      // Zoom counter for rate limiting
+      if (zoom_counter == 20_000_000) zoom_counter <= 0;
+      else zoom_counter <= zoom_counter + 1;
 
-      // Generate movement pulses when in edge zones
-      if (pulse_tick) begin
-        move_left <= in_left_edge;
-        move_right <= in_right_edge;
-        move_up <= in_top_edge;
-        move_down <= in_bottom_edge;
+      // Middle button zoom (hold middle + move up/down)
+      if (zoom_tick) begin
+        zoom_in  <= mouse_middle && (mouse_y < 20);
+        zoom_out <= mouse_middle && (mouse_y > 44);
       end else begin
-        move_left <= 0;
-        move_right <= 0;
-        move_up <= 0;
-        move_down <= 0;
+        zoom_in  <= 0;
+        zoom_out <= 0;
       end
 
-      // Middle button for zoom (scroll wheel alternative)
-      // Hold middle + move up/down for zoom
-      zoom_in  <= mouse_middle && in_top_edge && pulse_tick;
-      zoom_out <= mouse_middle && in_bottom_edge && pulse_tick;
+      // Drag detection and delta calculation
+      if (!drag_was_active && mouse_left) begin
+        // Start drag
+        drag_active <= 1;
+        drag_start_x <= mouse_x;
+        drag_start_y <= mouse_y;
+        last_x <= mouse_x;
+        last_y <= mouse_y;
+        drag_delta_x <= 0;
+        drag_delta_y <= 0;
+      end else if (drag_was_active && mouse_left) begin
+        // Continue drag - output delta since last frame
+        drag_active <= 1;
+        drag_delta_x <= $signed({1'b0, mouse_x}) - $signed({1'b0, last_x});
+        drag_delta_y <= $signed({1'b0, mouse_y}) - $signed({1'b0, last_y});
+        last_x <= mouse_x;
+        last_y <= mouse_y;
+      end else begin
+        // End drag or not dragging
+        drag_active  <= 0;
+        drag_delta_x <= 0;
+        drag_delta_y <= 0;
+      end
+
+      drag_was_active <= mouse_left;
     end
   end
 endmodule
+
 module graph_plotter_core (
     input wire clk_100,
     input wire clk_pix,
@@ -292,42 +319,40 @@ module graph_plotter_core (
     input  wire signed [31:0] y_q16_16,
     output wire        [ 7:0] oled_out
 );
-  // Generate mouse edge pulses
-  wire mouse_move_up, mouse_move_down, mouse_move_left, mouse_move_right;
+  // Mouse drag controller
+  wire drag_active;
+  wire signed [7:0] drag_delta_x;
+  wire signed [6:0] drag_delta_y;
   wire mouse_zoom_in, mouse_zoom_out;
 
-  mouse_graph_ctrl mouse_ctrl (
+  mouse_drag_ctrl drag_ctrl (
       .clk(clk_100),
       .rst(rst),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
       .mouse_middle(mouse_middle),
-      .move_up(mouse_move_up),
-      .move_down(mouse_move_down),
-      .move_left(mouse_move_left),
-      .move_right(mouse_move_right),
+      .drag_active(drag_active),
+      .drag_delta_x(drag_delta_x),
+      .drag_delta_y(drag_delta_y),
       .zoom_in(mouse_zoom_in),
       .zoom_out(mouse_zoom_out)
   );
 
-  // Combine button and mouse controls
-  wire combined_up = up_p | mouse_move_up;
-  wire combined_down = down_p | mouse_move_down;
-  wire combined_left = left_p | mouse_move_left;
-  wire combined_right = right_p | mouse_move_right;
-
-  wire move_up = combined_up & ~mode_zoom;
-  wire move_down = combined_down & ~mode_zoom;
-  wire move_left = combined_left;
-  wire move_right = combined_right;
   wire zoom_in_p = (mode_zoom & up_p) | mouse_zoom_in;
   wire zoom_out_p = (mode_zoom & down_p) | mouse_zoom_out;
-  wire need_clear = combined_up | combined_down | combined_left | combined_right | confirm_p;
 
-  // 1) viewport (pan/zoom)
+  wire move_up = up_p & ~mode_zoom;
+  wire move_down = down_p & ~mode_zoom;
+  wire move_left = left_p;
+  wire move_right = right_p;
+
+  wire need_clear = up_p | down_p | left_p | right_p | confirm_p | drag_active;
+
   wire signed [3:0] zoom_exp;
   wire signed [31:0] offset_x_q16_16;
   wire signed [31:0] offset_y_q16_16;
+
   viewport_ctrl u_vp (
       .clk(clk_100),
       .rst(rst),
@@ -337,15 +362,18 @@ module graph_plotter_core (
       .pulse_down(move_down),
       .pulse_zoom_in(zoom_in_p),
       .pulse_zoom_out(zoom_out_p),
+      .drag_active(drag_active),
+      .drag_delta_x_px(drag_delta_x),
+      .drag_delta_y_px(drag_delta_y),
       .zoom_exp(zoom_exp),
       .offset_x_q16_16(offset_x_q16_16),
       .offset_y_q16_16(offset_y_q16_16)
   );
 
-  // 2) combinational range (per sweep)
   wire signed [31:0] x_start_q16_16;
   wire signed [31:0] x_step_q16_16;
   wire        [ 7:0] sample_count;
+
   range_planner u_rng (
       .zoom_exp(zoom_exp),
       .offset_x_q16_16(offset_x_q16_16),
@@ -380,7 +408,6 @@ module graph_plotter_core (
     end
   end
 
-  // 4) plot received points (always ready to take one per cycle)
   wire [12:0] pixel_index;
   wire [15:0] graph_pixel;
   wire [15:0] pixel_colour;
@@ -400,7 +427,6 @@ module graph_plotter_core (
       .pixel_colour(graph_pixel)
   );
 
-  // Cursor display
   wire cursor_active;
   wire [15:0] cursor_colour;
   cursor_display cursor (
@@ -413,9 +439,7 @@ module graph_plotter_core (
       .cursor_active(cursor_active)
   );
 
-  // Overlay cursor on graph
   assign pixel_colour = cursor_active ? cursor_colour : graph_pixel;
-
 
   oled u_oled_graph (
       .clk_6p25m(clk_pix),

@@ -13,13 +13,10 @@ module Top_Student (
     output wire [ 7:0] JA,
     JB,
     JC,
-    input  wire        RsRx,
-    output wire        RsTx,
 
     inout wire PS2Clk,
     inout wire PS2Data
 );
-  localparam BAUD_RATE = 115200;
   localparam MAX_DATA = 32;
 
   wire rst = sw[15];
@@ -35,7 +32,6 @@ module Top_Student (
       .clk_1k(clk_1k)
   );
 
-  // ========== Button Navigation (original) ==========
   wire btn_up_p, btn_down_p, btn_left_p, btn_right_p, btn_confirm_p;
   nav_keys #(
       .CLK_HZ(100_000_000),
@@ -58,12 +54,10 @@ module Top_Student (
       .confirm_p(btn_confirm_p)
   );
 
-  // ========== PS/2 Mouse Setup ==========
   wire [6:0] mouse_x;
   wire [5:0] mouse_y;
   wire [3:0] mouse_z;
   wire mouse_left, mouse_middle, mouse_right;
-  wire [15:0] debug_led_mouse;
 
   mouse_wrapper mouse_wrap (
       .clk(clk),
@@ -79,14 +73,6 @@ module Top_Student (
       .mouse_new_event()
   );
 
-  // Debug LED shows mouse status and keypad status
-  assign debug_led_mouse[15]   = mouse_left;  // 1 = graph mode
-  assign debug_led_mouse[14]   = mouse_right;  // Left mouse button
-  assign debug_led_mouse[13]   = mouse_middle;  // New mouse data
-  assign debug_led_mouse[12:6] = mouse_x[6:0];  // Mouse X position
-  assign debug_led_mouse[5:0]  = mouse_y[5:0];  // Mouse Y position
-
-  // ========== Graph Interface ==========
   wire               graph_start;
   wire signed [31:0] graph_x_q16_16;
   wire signed [31:0] graph_y_q16_16;
@@ -95,28 +81,21 @@ module Top_Student (
   wire               graph_mode;
   wire        [15:0] debug_led_input;
 
-  // ========== Student Input with Mouse Support ==========
   student_input #(
-      .CLK_HZ(100_000_000),
-      .BAUD_RATE(BAUD_RATE),
+      .CLK_HZ  (100_000_000),
       .MAX_DATA(MAX_DATA)
   ) U_INPUT (
       .clk(clk),
       .rst(rst),
       .kb_sel(kb_select),
-      // Button controls (for graph and keypad)
       .up_p(~button_for_graph & btn_up_p),
       .down_p(~button_for_graph & btn_down_p),
       .left_p(~button_for_graph & btn_left_p),
       .right_p(~button_for_graph & btn_right_p),
       .confirm_p(~button_for_graph & btn_confirm_p),
-      // Mouse (passed through directly)
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
-      // UART and graph
-      .rx(RsRx),
-      .tx(RsTx),
       .graph_start(graph_start),
       .graph_x_q16_16(graph_x_q16_16),
       .graph_y_q16_16(graph_y_q16_16),
@@ -139,7 +118,6 @@ module Top_Student (
       .down_p(button_for_graph & btn_down_p),
       .confirm_p(button_for_graph & btn_confirm_p),
       .mode_zoom(mode_zoom),
-      // Mouse inputs
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
@@ -152,5 +130,5 @@ module Top_Student (
       .oled_out(JC)
   );
 
-  assign led = debug_led_mouse;
+  assign led = debug_led_input;
 endmodule
