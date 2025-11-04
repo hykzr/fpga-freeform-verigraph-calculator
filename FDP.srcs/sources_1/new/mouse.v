@@ -91,3 +91,108 @@ module mouse_wrapper (
   assign mouse_y = (mouse_y_internal >= `DISP_H) ? (`DISP_H - 1) : mouse_y_internal[5:0];
 
 endmodule
+
+module cursor_display (
+    input clk,
+    input [12:0] pixel_index,
+    input [6:0] mouse_x,
+    input [5:0] mouse_y,
+    input mouse_clicked,
+    output reg [15:0] cursor_colour,
+    output reg cursor_active
+);
+  localparam SCREEN_WIDTH = 96;
+  // Current pixel coordinates - calculated in combinational block
+  reg [6:0] pixel_x;
+  reg [5:0] pixel_y;
+  // Relative position from cursor origin
+  reg signed [7:0] rel_x;
+  reg signed [6:0] rel_y;
+  // Calculate pixel coordinates and relative positions
+  always @(*) begin
+    pixel_x = pixel_index % SCREEN_WIDTH;
+    pixel_y = pixel_index / SCREEN_WIDTH;
+    rel_x   = $signed({1'b0, pixel_x}) - $signed({1'b0, mouse_x});
+    rel_y   = $signed({1'b0, pixel_y}) - $signed({1'b0, mouse_y});
+  end
+  // Arrow cursor pattern (11x18 pixels) - IMPROVED
+  // Better arrow with connected tail
+  always @(*) begin
+    cursor_active = 0;
+    cursor_colour = 16'hFFFF;  // White cursor
+
+    if (mouse_clicked) begin
+      // GRAB HAND CURSOR (8x10 pixels)
+      // Closed fist shape
+      if (rel_x >= 0 && rel_x < 8 && rel_y >= 0 && rel_y < 10) begin
+        case (rel_y)
+          // Top of fingers
+          0: cursor_active = (rel_x >= 2 && rel_x <= 5);
+          1: cursor_active = (rel_x >= 1 && rel_x <= 6);
+          // Finger joints
+          2: cursor_active = (rel_x >= 1 && rel_x <= 6);
+          3: cursor_active = (rel_x >= 1 && rel_x <= 6);
+          // Palm area
+          4: cursor_active = (rel_x >= 0 && rel_x <= 6);
+          5: cursor_active = (rel_x >= 0 && rel_x <= 6);
+          6: cursor_active = (rel_x >= 0 && rel_x <= 6);
+          // Bottom palm
+          7: cursor_active = (rel_x >= 1 && rel_x <= 5);
+          8: cursor_active = (rel_x >= 2 && rel_x <= 4);
+          9: cursor_active = (rel_x == 3);
+          default: cursor_active = 0;
+        endcase
+
+        if (cursor_active) begin
+          cursor_colour = 16'hFDA0;  // Light orange/skin tone
+        end
+      end
+    end else begin
+      // ARROW CURSOR (11x18 pixels) - IMPROVED DESIGN
+      if (rel_x >= 0 && rel_x < 11 && rel_y >= 0 && rel_y < 18) begin
+        case (rel_y)
+          // Arrow head pointing up-left
+          0: cursor_active = (rel_x == 0);
+          1: cursor_active = (rel_x <= 1);
+          2: cursor_active = (rel_x <= 2);
+          3: cursor_active = (rel_x <= 3);
+          4: cursor_active = (rel_x <= 4);
+          5: cursor_active = (rel_x <= 5);
+          6: cursor_active = (rel_x <= 6);
+          7: cursor_active = (rel_x <= 7);
+          8: cursor_active = (rel_x <= 8);
+          9: cursor_active = (rel_x <= 9);
+          10: cursor_active = (rel_x <= 10);
+          // Transition to tail - connected properly
+          11: cursor_active = (rel_x >= 5 && rel_x <= 7);
+          12: cursor_active = (rel_x >= 5 && rel_x <= 7);
+          13: cursor_active = (rel_x >= 6 && rel_x <= 7);
+          14: cursor_active = (rel_x >= 6 && rel_x <= 8);
+          15: cursor_active = (rel_x >= 7 && rel_x <= 8);
+          16: cursor_active = (rel_x >= 7 && rel_x <= 9);
+          17: cursor_active = (rel_x >= 8 && rel_x <= 9);
+          default: cursor_active = 0;
+        endcase
+
+        if (cursor_active) begin
+          // Black outline on edges, white fill inside
+          if (rel_x == 0 ||  // Left edge
+              (rel_y <= 10 && rel_x == rel_y) ||  // Diagonal edge
+              (rel_y == 10) ||  // Bottom of triangle
+              (rel_y == 11 && (rel_x == 5 || rel_x == 7)) ||  // Tail sides
+              (rel_y == 12 && (rel_x == 5 || rel_x == 7)) ||
+                        (rel_y == 13 && (rel_x == 6 || rel_x == 7)) ||
+                        (rel_y == 14 && (rel_x == 6 || rel_x == 8)) ||
+                        (rel_y == 15 && (rel_x == 7 || rel_x == 8)) ||
+                        (rel_y == 16 && (rel_x == 7 || rel_x == 9)) ||
+                        (rel_y == 17 && (rel_x == 8 || rel_x == 9))) begin
+            cursor_colour = 16'h0000;  // Black outline
+          end else begin
+            cursor_colour = 16'hFFFF;  // White fill
+          end
+        end
+      end
+    end
+  end
+
+endmodule

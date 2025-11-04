@@ -139,6 +139,11 @@ module Top_Student (
       .down_p(button_for_graph & btn_down_p),
       .confirm_p(button_for_graph & btn_confirm_p),
       .mode_zoom(mode_zoom),
+      // Mouse inputs
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
+      .mouse_middle(mouse_middle),
       .start_calc(graph_start),
       .x_q16_16(graph_x_q16_16),
       .y_ready(graph_y_ready & graph_mode),

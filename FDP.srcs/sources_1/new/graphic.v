@@ -204,16 +204,87 @@ module mapper_plot_points (
 
 endmodule
 
+// Mouse-based graph control
+// Generates pulses when mouse is at screen edges or middle button pressed
+module mouse_graph_ctrl (
+    input wire clk,
+    input wire rst,
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire mouse_middle,
+    output reg move_up,
+    output reg move_down,
+    output reg move_left,
+    output reg move_right,
+    output reg zoom_in,
+    output reg zoom_out
+);
+  // Edge detection zones (pixels from edge)
+  localparam EDGE_SIZE = 8;
+  localparam DISP_W = 96;
+  localparam DISP_H = 64;
+
+  // Detect mouse in edge zones
+  wire in_left_edge = (mouse_x < EDGE_SIZE);
+  wire in_right_edge = (mouse_x >= (DISP_W - EDGE_SIZE));
+  wire in_top_edge = (mouse_y < EDGE_SIZE);
+  wire in_bottom_edge = (mouse_y >= (DISP_H - EDGE_SIZE));
+
+  // Generate pulses at lower rate (every N clocks)
+  reg [19:0] pulse_counter;
+  wire pulse_tick = (pulse_counter == 0);
+
+  always @(posedge clk) begin
+    if (rst) begin
+      pulse_counter <= 0;
+      move_up <= 0;
+      move_down <= 0;
+      move_left <= 0;
+      move_right <= 0;
+      zoom_in <= 0;
+      zoom_out <= 0;
+    end else begin
+      // Counter for pulse generation (about 5 Hz at 100 MHz)
+      if (pulse_counter == 20_000_000) pulse_counter <= 0;
+      else pulse_counter <= pulse_counter + 1;
+
+      // Generate movement pulses when in edge zones
+      if (pulse_tick) begin
+        move_left <= in_left_edge;
+        move_right <= in_right_edge;
+        move_up <= in_top_edge;
+        move_down <= in_bottom_edge;
+      end else begin
+        move_left <= 0;
+        move_right <= 0;
+        move_up <= 0;
+        move_down <= 0;
+      end
+
+      // Middle button for zoom (scroll wheel alternative)
+      // Hold middle + move up/down for zoom
+      zoom_in  <= mouse_middle && in_top_edge && pulse_tick;
+      zoom_out <= mouse_middle && in_bottom_edge && pulse_tick;
+    end
+  end
+endmodule
 module graph_plotter_core (
-    input  wire               clk_100,
-    input  wire               clk_pix,
-    input  wire               rst,
-    input  wire               up_p,
+    input wire clk_100,
+    input wire clk_pix,
+    input wire rst,
+    input wire up_p,
     down_p,
     left_p,
     right_p,
     confirm_p,
-    input  wire               mode_zoom,
+    input wire mode_zoom,
+
+    // Mouse inputs
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire       mouse_left,
+    input wire       mouse_middle,
+
     output reg                start_calc = 0,
     output wire signed [31:0] x_q16_16,
     input  wire               y_ready,
@@ -221,13 +292,37 @@ module graph_plotter_core (
     input  wire signed [31:0] y_q16_16,
     output wire        [ 7:0] oled_out
 );
-  wire move_up = up_p & ~mode_zoom;
-  wire move_down = down_p & ~mode_zoom;
-  wire move_left = left_p & ~mode_zoom;
-  wire move_right = right_p & ~mode_zoom;
-  wire zoom_in_p = mode_zoom & up_p;
-  wire zoom_out_p = mode_zoom & down_p;
-  wire need_clear = up_p | down_p | left_p | right_p | confirm_p;
+  // Generate mouse edge pulses
+  wire mouse_move_up, mouse_move_down, mouse_move_left, mouse_move_right;
+  wire mouse_zoom_in, mouse_zoom_out;
+
+  mouse_graph_ctrl mouse_ctrl (
+      .clk(clk_100),
+      .rst(rst),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_middle(mouse_middle),
+      .move_up(mouse_move_up),
+      .move_down(mouse_move_down),
+      .move_left(mouse_move_left),
+      .move_right(mouse_move_right),
+      .zoom_in(mouse_zoom_in),
+      .zoom_out(mouse_zoom_out)
+  );
+
+  // Combine button and mouse controls
+  wire combined_up = up_p | mouse_move_up;
+  wire combined_down = down_p | mouse_move_down;
+  wire combined_left = left_p | mouse_move_left;
+  wire combined_right = right_p | mouse_move_right;
+
+  wire move_up = combined_up & ~mode_zoom;
+  wire move_down = combined_down & ~mode_zoom;
+  wire move_left = combined_left;
+  wire move_right = combined_right;
+  wire zoom_in_p = (mode_zoom & up_p) | mouse_zoom_in;
+  wire zoom_out_p = (mode_zoom & down_p) | mouse_zoom_out;
+  wire need_clear = combined_up | combined_down | combined_left | combined_right | confirm_p;
 
   // 1) viewport (pan/zoom)
   wire signed [3:0] zoom_exp;
@@ -287,7 +382,9 @@ module graph_plotter_core (
 
   // 4) plot received points (always ready to take one per cycle)
   wire [12:0] pixel_index;
+  wire [15:0] graph_pixel;
   wire [15:0] pixel_colour;
+
   mapper_plot_points u_plot (
       .clk(clk_100),
       .rst(rst),
@@ -300,8 +397,25 @@ module graph_plotter_core (
       .y_q16_16(y_q16_16),
       .clear_curves(need_clear),
       .pixel_index(pixel_index),
-      .pixel_colour(pixel_colour)
+      .pixel_colour(graph_pixel)
   );
+
+  // Cursor display
+  wire cursor_active;
+  wire [15:0] cursor_colour;
+  cursor_display cursor (
+      .clk(clk_pix),
+      .pixel_index(pixel_index),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_clicked(mouse_left),
+      .cursor_colour(cursor_colour),
+      .cursor_active(cursor_active)
+  );
+
+  // Overlay cursor on graph
+  assign pixel_colour = cursor_active ? cursor_colour : graph_pixel;
+
 
   oled u_oled_graph (
       .clk_6p25m(clk_pix),
