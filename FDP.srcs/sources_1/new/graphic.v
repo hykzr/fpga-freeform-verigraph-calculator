@@ -53,9 +53,9 @@ module viewport_ctrl (
         offset_x_q16_16 <= offset_x_q16_16 <<< 1;
         offset_y_q16_16 <= offset_y_q16_16 <<< 1;
       end else if (drag_active && (drag_delta_x_px != 0 || drag_delta_y_px != 0)) begin
-        // Apply drag: move graph opposite to mouse movement
-        offset_x_q16_16 <= offset_x_q16_16 - drag_world_dx_q16;
-        offset_y_q16_16 <= offset_y_q16_16 + drag_world_dy_q16;
+        // Apply drag: graph moves WITH mouse movement
+        offset_x_q16_16 <= offset_x_q16_16 + drag_world_dx_q16;
+        offset_y_q16_16 <= offset_y_q16_16 - drag_world_dy_q16;  // Y is inverted in screen space
       end else begin
         // Button-based pan
         if (pulse_left) offset_x_q16_16 <= offset_x_q16_16 - pan_step_world_q16;
@@ -99,13 +99,14 @@ module mapper_plot_points (
     input wire signed [31:0] offset_y_q16_16,
 
     // streamed points (Q16.16)
-    input wire               start,     // strobe: this (x,y) is valid this cycle
+    input wire               start,
     input wire               y_valid,
     input wire signed [31:0] x_q16_16,
     input wire signed [31:0] y_q16_16,
 
     // clear
     input wire clear_curves,
+    input wire show_curves,
 
     // OLED sampling
     input  wire [12:0] pixel_index,
@@ -118,11 +119,11 @@ module mapper_plot_points (
   localparam VRAM_SIZE = (`DISP_W * `DISP_H);
 
   // Colors (RGB565)
-  localparam [15:0] COL_BG = 16'h0000;  // black
-  localparam [15:0] COL_AXES = 16'h07E0;  // green
-  localparam [15:0] COL_CURVE = 16'hFFFF;  // white
-  localparam [15:0] COL_ORIGIN = 16'hFFE0;  // yellow
-  localparam [15:0] COL_UNIT = 16'hF800;  // red
+  localparam [15:0] COL_BG = 16'h0000;
+  localparam [15:0] COL_AXES = 16'h07E0;
+  localparam [15:0] COL_CURVE = 16'hFFFF;
+  localparam [15:0] COL_ORIGIN = 16'hFFE0;
+  localparam [15:0] COL_UNIT = 16'hF800;
 
   reg [6 * SCREEN_W - 1 : 0] curve_y;
   reg [SCREEN_W - 1 : 0] curve_y_valid;
@@ -141,14 +142,14 @@ module mapper_plot_points (
   wire py_samp_in = (py_samp >= 0) && (py_samp < SCREEN_H);
 
   // ---------- map origin (0,0) ----------
-  wire signed [31:0] dx_o_q16 = offset_x_q16_16;  // 0 - offset_x
-  wire signed [31:0] dy_o_q16 = offset_y_q16_16;  // 0 - offset_y
+  wire signed [31:0] dx_o_q16 = offset_x_q16_16;
+  wire signed [31:0] dy_o_q16 = offset_y_q16_16;
   wire signed [31:0] xo_q16 = (zoom_exp >= 0) ? (dx_o_q16 <<< zoom_exp) : (dx_o_q16 >>> e_neg);
   wire signed [31:0] yo_q16 = (zoom_exp >= 0) ? (dy_o_q16 <<< zoom_exp) : (dy_o_q16 >>> e_neg);
   wire signed [31:0] xo_c_q16 = xo_q16 + (CENTER_X <<< 16);
   wire signed [31:0] yo_c_q16 = (CENTER_Y <<< 16) - yo_q16;
-  wire signed [15:0] px_org = xo_c_q16 >>> 16;  // origin column
-  wire signed [15:0] py_org = yo_c_q16 >>> 16;  // origin row
+  wire signed [15:0] px_org = xo_c_q16 >>> 16;
+  wire signed [15:0] py_org = yo_c_q16 >>> 16;
   wire px_org_in = (px_org >= 0) && (px_org < SCREEN_W);
   wire py_org_in = (py_org >= 0) && (py_org < SCREEN_H);
 
@@ -164,7 +165,7 @@ module mapper_plot_points (
   reg [1:0] holdoff;
   always @(posedge clk) begin
     if (rst) holdoff <= 2'b00;
-    else if (clear_curves) holdoff <= 2'b11;  // mask writes for 2 cycles
+    else if (clear_curves) holdoff <= 2'b11;
     else holdoff <= {1'b0, holdoff[1]};
   end
   wire we = start && px_samp_in && (holdoff == 2'b00);
@@ -184,8 +185,8 @@ module mapper_plot_points (
   end
 
   // ---------- read path (compose curve + moving axes + markers) ----------
-  wire [6:0] sx = pixel_index % SCREEN_W;  // column
-  wire [5:0] sy = pixel_index / SCREEN_W;  // row
+  wire [6:0] sx = pixel_index % SCREEN_W;
+  wire [5:0] sy = pixel_index / SCREEN_W;
 
   // moving world axes at origin
   wire on_vaxis = px_org_in && (sx == px_org[6:0]);
@@ -198,8 +199,8 @@ module mapper_plot_points (
   // unit dot at (4,0)
   wire on_unit = unit_inb && (sx == px_unit[6:0]) && (sy == py_unit[5:0]);
 
-  // curve pixel
-  wire on_curve = curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
+  // curve pixel - only show if show_curves is true
+  wire on_curve = show_curves && curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
                   && curve_y[sx*6+1] == sy[1]
                   && curve_y[sx*6+2] == sy[2]
                   && curve_y[sx*6+3] == sy[3]
@@ -216,85 +217,6 @@ module mapper_plot_points (
 
 endmodule
 
-module mouse_drag_ctrl (
-    input wire clk,
-    input wire rst,
-    input wire [6:0] mouse_x,
-    input wire [5:0] mouse_y,
-    input wire mouse_left,
-    input wire mouse_middle,
-    output reg drag_active,
-    output reg signed [7:0] drag_delta_x,
-    output reg signed [6:0] drag_delta_y,
-    output reg zoom_in,
-    output reg zoom_out
-);
-  reg [6:0] drag_start_x;
-  reg [5:0] drag_start_y;
-  reg [6:0] last_x;
-  reg [5:0] last_y;
-  reg drag_was_active;
-
-  // Scroll wheel zoom detection
-  reg [19:0] zoom_counter;
-  wire zoom_tick = (zoom_counter == 0);
-
-  always @(posedge clk) begin
-    if (rst) begin
-      drag_active <= 0;
-      drag_delta_x <= 0;
-      drag_delta_y <= 0;
-      drag_start_x <= 0;
-      drag_start_y <= 0;
-      last_x <= 0;
-      last_y <= 0;
-      drag_was_active <= 0;
-      zoom_in <= 0;
-      zoom_out <= 0;
-      zoom_counter <= 0;
-    end else begin
-      // Zoom counter for rate limiting
-      if (zoom_counter == 20_000_000) zoom_counter <= 0;
-      else zoom_counter <= zoom_counter + 1;
-
-      // Middle button zoom (hold middle + move up/down)
-      if (zoom_tick) begin
-        zoom_in  <= mouse_middle && (mouse_y < 20);
-        zoom_out <= mouse_middle && (mouse_y > 44);
-      end else begin
-        zoom_in  <= 0;
-        zoom_out <= 0;
-      end
-
-      // Drag detection and delta calculation
-      if (!drag_was_active && mouse_left) begin
-        // Start drag
-        drag_active <= 1;
-        drag_start_x <= mouse_x;
-        drag_start_y <= mouse_y;
-        last_x <= mouse_x;
-        last_y <= mouse_y;
-        drag_delta_x <= 0;
-        drag_delta_y <= 0;
-      end else if (drag_was_active && mouse_left) begin
-        // Continue drag - output delta since last frame
-        drag_active <= 1;
-        drag_delta_x <= $signed({1'b0, mouse_x}) - $signed({1'b0, last_x});
-        drag_delta_y <= $signed({1'b0, mouse_y}) - $signed({1'b0, last_y});
-        last_x <= mouse_x;
-        last_y <= mouse_y;
-      end else begin
-        // End drag or not dragging
-        drag_active  <= 0;
-        drag_delta_x <= 0;
-        drag_delta_y <= 0;
-      end
-
-      drag_was_active <= mouse_left;
-    end
-  end
-endmodule
-
 module graph_plotter_core (
     input wire clk_100,
     input wire clk_pix,
@@ -309,8 +231,12 @@ module graph_plotter_core (
     // Mouse inputs
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
+    input wire [3:0] mouse_z,
     input wire       mouse_left,
-    input wire       mouse_middle,
+    input wire       mouse_active,
+
+    // Graph mode control
+    input wire graph_mode,  // NEW: controls whether to compute/show curves
 
     output reg                start_calc = 0,
     output wire signed [31:0] x_q16_16,
@@ -330,8 +256,8 @@ module graph_plotter_core (
       .rst(rst),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
-      .mouse_left(mouse_left),
-      .mouse_middle(mouse_middle),
+      .mouse_z(mouse_z),
+      .mouse_left(mouse_left & mouse_active),
       .drag_active(drag_active),
       .drag_delta_x(drag_delta_x),
       .drag_delta_y(drag_delta_y),
@@ -339,8 +265,8 @@ module graph_plotter_core (
       .zoom_out(mouse_zoom_out)
   );
 
-  wire zoom_in_p = (mode_zoom & up_p) | mouse_zoom_in;
-  wire zoom_out_p = (mode_zoom & down_p) | mouse_zoom_out;
+  wire zoom_in_p = (mode_zoom & up_p) | (mouse_zoom_in & mouse_active);
+  wire zoom_out_p = (mode_zoom & down_p) | (mouse_zoom_out & mouse_active);
 
   wire move_up = up_p & ~mode_zoom;
   wire move_down = down_p & ~mode_zoom;
@@ -388,7 +314,7 @@ module graph_plotter_core (
   assign x_q16_16 = x_cur;
 
   always @(posedge clk_100) begin
-    if (rst | need_clear) begin
+    if (rst | need_clear | ~graph_mode) begin
       idx    <= 8'd0;
       x_cur  <= x_start_q16_16;
       start_calc <= 1'b0;
@@ -418,23 +344,26 @@ module graph_plotter_core (
       .zoom_exp(zoom_exp),
       .offset_x_q16_16(offset_x_q16_16),
       .offset_y_q16_16(offset_y_q16_16),
-      .start(y_ready),
+      .start(y_ready & graph_mode),
       .y_valid(y_valid),
       .x_q16_16(x_q16_16),
       .y_q16_16(y_q16_16),
-      .clear_curves(need_clear),
+      .clear_curves(need_clear | ~graph_mode),
+      .show_curves(graph_mode),
       .pixel_index(pixel_index),
       .pixel_colour(graph_pixel)
   );
 
   wire cursor_active;
   wire [15:0] cursor_colour;
+
   cursor_display cursor (
       .clk(clk_pix),
       .pixel_index(pixel_index),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_clicked(mouse_left),
+      .mouse_active(mouse_active),
       .cursor_colour(cursor_colour),
       .cursor_active(cursor_active)
   );

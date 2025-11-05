@@ -263,6 +263,7 @@ module keypad_widget #(
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
     input wire       mouse_left,
+    input wire       mouse_active,
 
     // pixel render side
     input  wire       clk_pix,  // pixel clock for your OLED pipeline
@@ -351,14 +352,15 @@ module keypad_widget #(
       .GRID_COLS (GRID_COLS),
       .KB_LAYOUT (KB_LAYOUT)
   ) u_rend (
-      .clk_pix   (clk_pix),
-      .rst       (rst),
-      .focus_row (focus_row),
-      .focus_col (focus_col),
-      .mouse_x   (mouse_x),
-      .mouse_y   (mouse_y),
-      .mouse_left(mouse_left),
-      .oled_out  (oled_out)
+      .clk_pix     (clk_pix),
+      .rst         (rst),
+      .focus_row   (focus_row),
+      .focus_col   (focus_col),
+      .mouse_x     (mouse_x),
+      .mouse_y     (mouse_y),
+      .mouse_left  (mouse_left),
+      .mouse_active(mouse_active),
+      .oled_out    (oled_out)
   );
 endmodule
 
@@ -376,7 +378,8 @@ module keypad_renderer #(
     // Mouse cursor position and state
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
-    input wire       mouse_left, // For click state
+    input wire       mouse_left,   // For click state
+    input wire       mouse_active,
 
     output wire [7:0] oled_out  // hook to JB[7:0] (or JA/JC)
 );
@@ -505,6 +508,7 @@ module keypad_renderer #(
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_clicked(mouse_left),
+      .mouse_active(mouse_active),
       .cursor_colour(cursor_colour),
       .cursor_active(cursor_active)
   );
@@ -517,7 +521,7 @@ module keypad_renderer #(
     if (is_focus && in_cell) px = `C_FOCUS;
     if (border_on) px = `C_BORDER;
     if (gl_on) px = `C_TEXT;  // text on top
-    if (cursor_active) px = cursor_colour;  // Cursor on top of everything
+    if (cursor_active) px = cursor_colour & mouse_active;  // Cursor on top of everything
   end
   oled u_oled (
       .clk_6p25m  (clk_pix),

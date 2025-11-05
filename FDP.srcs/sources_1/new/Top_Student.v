@@ -73,6 +73,18 @@ module Top_Student (
       .mouse_new_event()
   );
 
+  // Mouse mode switch (0=keypad, 1=graph)
+  wire mouse_mode;
+  mouse_mode_switch mode_sw (
+      .clk(clk),
+      .rst(rst),
+      .mouse_middle(mouse_middle),
+      .mouse_mode(mouse_mode)
+  );
+
+  wire               mouse_for_keypad = ~mouse_mode;
+  wire               mouse_for_graph = mouse_mode;
+
   wire               graph_start;
   wire signed [31:0] graph_x_q16_16;
   wire signed [31:0] graph_y_q16_16;
@@ -95,7 +107,8 @@ module Top_Student (
       .confirm_p(~button_for_graph & btn_confirm_p),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
-      .mouse_left(mouse_left),
+      .mouse_left(mouse_left & mouse_for_keypad),
+      .mouse_active(mouse_for_keypad),
       .graph_start(graph_start),
       .graph_x_q16_16(graph_x_q16_16),
       .graph_y_q16_16(graph_y_q16_16),
@@ -111,7 +124,8 @@ module Top_Student (
   graph_plotter_core u_core (
       .clk_100(clk),
       .clk_pix(clk_6p25M),
-      .rst(rst | ~graph_mode),
+      .rst(rst),
+      .graph_mode(graph_mode),
       .left_p(button_for_graph & btn_left_p),
       .right_p(button_for_graph & btn_right_p),
       .up_p(button_for_graph & btn_up_p),
@@ -120,8 +134,9 @@ module Top_Student (
       .mode_zoom(mode_zoom),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
-      .mouse_left(mouse_left),
-      .mouse_middle(mouse_middle),
+      .mouse_z(mouse_z),
+      .mouse_left(mouse_left & mouse_for_graph),
+      .mouse_active(mouse_for_graph),
       .start_calc(graph_start),
       .x_q16_16(graph_x_q16_16),
       .y_ready(graph_y_ready & graph_mode),
@@ -130,5 +145,6 @@ module Top_Student (
       .oled_out(JC)
   );
 
-  assign led = debug_led_input;
+  assign led[15:4] = debug_led_input[15:4];
+  assign led[3:0]  = mouse_z;
 endmodule

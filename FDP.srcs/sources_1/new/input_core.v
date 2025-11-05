@@ -77,6 +77,7 @@ module input_core #(
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
     input wire       mouse_left,
+    input wire       mouse_active,
 
     // external bulk load (replace buffer)
     input wire                  buf_load,
@@ -122,6 +123,7 @@ module input_core #(
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
       .clk_pix(clk_pix),
       .oled_out(oled_out_0),
       .tb_append(ap0),
@@ -151,6 +153,7 @@ module input_core #(
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
       .clk_pix(clk_pix),
       .oled_out(oled_out_1),
       .tb_append(ap1),
@@ -180,6 +183,7 @@ module input_core #(
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
       .clk_pix(clk_pix),
       .oled_out(oled_out_2),
       .tb_append(ap2),
@@ -273,8 +277,7 @@ module compute_link #(
       .x_value(graph_x_q16_16),
       .result(eval_result),
       .error_flags(eval_error),
-      .done(eval_done),
-      .debug_first_reg()
+      .done(eval_done)
   );
 
   // Integer to ASCII converter
@@ -415,6 +418,7 @@ module student_input #(
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
     input wire       mouse_left,
+    input wire       mouse_active,
 
     // Graph interface
     input  wire               graph_start,
@@ -478,6 +482,7 @@ module student_input #(
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
       .buf_load(load_buf),
       .buf_load_len(load_len),
       .buf_load_bus(load_bus),

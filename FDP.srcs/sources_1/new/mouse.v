@@ -98,101 +98,183 @@ module cursor_display (
     input [6:0] mouse_x,
     input [5:0] mouse_y,
     input mouse_clicked,
+    input mouse_active,
     output reg [15:0] cursor_colour,
     output reg cursor_active
 );
   localparam SCREEN_WIDTH = 96;
-  // Current pixel coordinates - calculated in combinational block
   reg [6:0] pixel_x;
   reg [5:0] pixel_y;
-  // Relative position from cursor origin
   reg signed [7:0] rel_x;
   reg signed [6:0] rel_y;
-  // Calculate pixel coordinates and relative positions
+
   always @(*) begin
     pixel_x = pixel_index % SCREEN_WIDTH;
     pixel_y = pixel_index / SCREEN_WIDTH;
     rel_x   = $signed({1'b0, pixel_x}) - $signed({1'b0, mouse_x});
     rel_y   = $signed({1'b0, pixel_y}) - $signed({1'b0, mouse_y});
   end
-  // Arrow cursor pattern (11x18 pixels) - IMPROVED
-  // Better arrow with connected tail
+
   always @(*) begin
     cursor_active = 0;
-    cursor_colour = 16'hFFFF;  // White cursor
+    cursor_colour = 16'hFFFF;
 
-    if (mouse_clicked) begin
-      // GRAB HAND CURSOR (8x10 pixels)
-      // Closed fist shape
-      if (rel_x >= 0 && rel_x < 8 && rel_y >= 0 && rel_y < 10) begin
-        case (rel_y)
-          // Top of fingers
-          0: cursor_active = (rel_x >= 2 && rel_x <= 5);
-          1: cursor_active = (rel_x >= 1 && rel_x <= 6);
-          // Finger joints
-          2: cursor_active = (rel_x >= 1 && rel_x <= 6);
-          3: cursor_active = (rel_x >= 1 && rel_x <= 6);
-          // Palm area
-          4: cursor_active = (rel_x >= 0 && rel_x <= 6);
-          5: cursor_active = (rel_x >= 0 && rel_x <= 6);
-          6: cursor_active = (rel_x >= 0 && rel_x <= 6);
-          // Bottom palm
-          7: cursor_active = (rel_x >= 1 && rel_x <= 5);
-          8: cursor_active = (rel_x >= 2 && rel_x <= 4);
-          9: cursor_active = (rel_x == 3);
-          default: cursor_active = 0;
-        endcase
+    if (mouse_active) begin
+      if (mouse_clicked) begin
+        // GRAB HAND CURSOR (8x10 pixels)
+        if (rel_x >= 0 && rel_x < 8 && rel_y >= 0 && rel_y < 10) begin
+          case (rel_y)
+            0: cursor_active = (rel_x >= 2 && rel_x <= 5);
+            1: cursor_active = (rel_x >= 1 && rel_x <= 6);
+            2: cursor_active = (rel_x >= 1 && rel_x <= 6);
+            3: cursor_active = (rel_x >= 1 && rel_x <= 6);
+            4: cursor_active = (rel_x >= 0 && rel_x <= 6);
+            5: cursor_active = (rel_x >= 0 && rel_x <= 6);
+            6: cursor_active = (rel_x >= 0 && rel_x <= 6);
+            7: cursor_active = (rel_x >= 1 && rel_x <= 5);
+            8: cursor_active = (rel_x >= 2 && rel_x <= 4);
+            9: cursor_active = (rel_x == 3);
+            default: cursor_active = 0;
+          endcase
 
-        if (cursor_active) begin
-          cursor_colour = 16'hFDA0;  // Light orange/skin tone
+          if (cursor_active) begin
+            cursor_colour = 16'hFDA0;
+          end
         end
-      end
-    end else begin
-      // ARROW CURSOR (11x18 pixels) - IMPROVED DESIGN
-      if (rel_x >= 0 && rel_x < 11 && rel_y >= 0 && rel_y < 18) begin
-        case (rel_y)
-          // Arrow head pointing up-left
-          0: cursor_active = (rel_x == 0);
-          1: cursor_active = (rel_x <= 1);
-          2: cursor_active = (rel_x <= 2);
-          3: cursor_active = (rel_x <= 3);
-          4: cursor_active = (rel_x <= 4);
-          5: cursor_active = (rel_x <= 5);
-          6: cursor_active = (rel_x <= 6);
-          7: cursor_active = (rel_x <= 7);
-          8: cursor_active = (rel_x <= 8);
-          9: cursor_active = (rel_x <= 9);
-          10: cursor_active = (rel_x <= 10);
-          // Transition to tail - connected properly
-          11: cursor_active = (rel_x >= 5 && rel_x <= 7);
-          12: cursor_active = (rel_x >= 5 && rel_x <= 7);
-          13: cursor_active = (rel_x >= 6 && rel_x <= 7);
-          14: cursor_active = (rel_x >= 6 && rel_x <= 8);
-          15: cursor_active = (rel_x >= 7 && rel_x <= 8);
-          16: cursor_active = (rel_x >= 7 && rel_x <= 9);
-          17: cursor_active = (rel_x >= 8 && rel_x <= 9);
-          default: cursor_active = 0;
-        endcase
+      end else begin
+        // ARROW CURSOR (11x18 pixels)
+        if (rel_x >= 0 && rel_x < 11 && rel_y >= 0 && rel_y < 18) begin
+          case (rel_y)
+            0: cursor_active = (rel_x == 0);
+            1: cursor_active = (rel_x <= 1);
+            2: cursor_active = (rel_x <= 2);
+            3: cursor_active = (rel_x <= 3);
+            4: cursor_active = (rel_x <= 4);
+            5: cursor_active = (rel_x <= 5);
+            6: cursor_active = (rel_x <= 6);
+            7: cursor_active = (rel_x <= 7);
+            8: cursor_active = (rel_x <= 8);
+            9: cursor_active = (rel_x <= 9);
+            10: cursor_active = (rel_x <= 10);
+            11: cursor_active = (rel_x >= 5 && rel_x <= 7);
+            12: cursor_active = (rel_x >= 5 && rel_x <= 7);
+            13: cursor_active = (rel_x >= 6 && rel_x <= 7);
+            14: cursor_active = (rel_x >= 6 && rel_x <= 8);
+            15: cursor_active = (rel_x >= 7 && rel_x <= 8);
+            16: cursor_active = (rel_x >= 7 && rel_x <= 9);
+            17: cursor_active = (rel_x >= 8 && rel_x <= 9);
+            default: cursor_active = 0;
+          endcase
 
-        if (cursor_active) begin
-          // Black outline on edges, white fill inside
-          if (rel_x == 0 ||  // Left edge
-              (rel_y <= 10 && rel_x == rel_y) ||  // Diagonal edge
-              (rel_y == 10) ||  // Bottom of triangle
-              (rel_y == 11 && (rel_x == 5 || rel_x == 7)) ||  // Tail sides
-              (rel_y == 12 && (rel_x == 5 || rel_x == 7)) ||
-                        (rel_y == 13 && (rel_x == 6 || rel_x == 7)) ||
-                        (rel_y == 14 && (rel_x == 6 || rel_x == 8)) ||
-                        (rel_y == 15 && (rel_x == 7 || rel_x == 8)) ||
-                        (rel_y == 16 && (rel_x == 7 || rel_x == 9)) ||
-                        (rel_y == 17 && (rel_x == 8 || rel_x == 9))) begin
-            cursor_colour = 16'h0000;  // Black outline
-          end else begin
-            cursor_colour = 16'hFFFF;  // White fill
+          if (cursor_active) begin
+            if (rel_x == 0 ||
+                (rel_y <= 10 && rel_x == rel_y) ||
+                (rel_y == 10) ||
+                (rel_y == 11 && (rel_x == 5 || rel_x == 7)) ||
+                (rel_y == 12 && (rel_x == 5 || rel_x == 7)) ||
+                (rel_y == 13 && (rel_x == 6 || rel_x == 7)) ||
+                (rel_y == 14 && (rel_x == 6 || rel_x == 8)) ||
+                (rel_y == 15 && (rel_x == 7 || rel_x == 8)) ||
+                (rel_y == 16 && (rel_x == 7 || rel_x == 9)) ||
+                (rel_y == 17 && (rel_x == 8 || rel_x == 9))) begin
+              cursor_colour = 16'h0000;
+            end else begin
+              cursor_colour = 16'hFFFF;
+            end
           end
         end
       end
     end
   end
 
+endmodule
+
+module mouse_drag_ctrl (
+    input wire clk,
+    input wire rst,
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire [3:0] mouse_z,
+    input wire mouse_left,
+    output reg drag_active,
+    output reg signed [7:0] drag_delta_x,
+    output reg signed [6:0] drag_delta_y,
+    output reg zoom_in,
+    output reg zoom_out
+);
+  reg [6:0] last_x;
+  reg [5:0] last_y;
+  reg [3:0] last_z;
+  reg drag_was_active;
+
+  // Scroll detection with edge detection
+  wire signed [3:0] z_signed = $signed(mouse_z);
+  wire signed [3:0] last_z_signed = $signed(last_z);
+  wire z_scroll_up = (z_signed > 4'sd0) && (last_z_signed == 4'sd0);
+  wire z_scroll_down = (z_signed < 4'sd0) && (last_z_signed == 4'sd0);
+
+  always @(posedge clk) begin
+    if (rst) begin
+      drag_active <= 0;
+      drag_delta_x <= 0;
+      drag_delta_y <= 0;
+      last_x <= 0;
+      last_y <= 0;
+      last_z <= 0;
+      drag_was_active <= 0;
+      zoom_in <= 0;
+      zoom_out <= 0;
+    end else begin
+      // Scroll wheel zoom - edge detection (count only once per scroll)
+      zoom_in  <= z_scroll_up;
+      zoom_out <= z_scroll_down;
+      last_z   <= mouse_z;
+
+      // Drag detection and delta calculation
+      if (!drag_was_active && mouse_left) begin
+        // Start drag
+        drag_active <= 1;
+        last_x <= mouse_x;
+        last_y <= mouse_y;
+        drag_delta_x <= 0;
+        drag_delta_y <= 0;
+      end else if (drag_was_active && mouse_left) begin
+        // Continue drag - output delta since last frame
+        drag_active <= 1;
+        drag_delta_x <= $signed({1'b0, mouse_x}) - $signed({1'b0, last_x});
+        drag_delta_y <= $signed({1'b0, mouse_y}) - $signed({1'b0, last_y});
+        last_x <= mouse_x;
+        last_y <= mouse_y;
+      end else begin
+        // End drag or not dragging
+        drag_active  <= 0;
+        drag_delta_x <= 0;
+        drag_delta_y <= 0;
+      end
+
+      drag_was_active <= mouse_left;
+    end
+  end
+endmodule
+
+module mouse_mode_switch (
+    input wire clk,
+    input wire rst,
+    input wire mouse_middle,
+    output reg mouse_mode  // 0 = keypad, 1 = graph
+);
+  reg  mouse_middle_prev;
+  wire middle_click = mouse_middle && !mouse_middle_prev;
+
+  always @(posedge clk) begin
+    if (rst) begin
+      mouse_mode <= 0;  // Start with keypad
+      mouse_middle_prev <= 0;
+    end else begin
+      mouse_middle_prev <= mouse_middle;
+      if (middle_click) begin
+        mouse_mode <= ~mouse_mode;
+      end
+    end
+  end
 endmodule

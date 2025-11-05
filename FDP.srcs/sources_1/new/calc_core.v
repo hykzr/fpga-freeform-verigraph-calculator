@@ -12,29 +12,46 @@ module expression_evaluator #(
     input  wire signed [         31:0] x_value,
     output reg signed  [         31:0] result,
     output reg         [          7:0] error_flags,
-    output reg                         done,
-    output wire        [          7:0] debug_first_reg
+    output reg                         done
 );
 
   localparam ERR_EMPTY = 8'h01;
   localparam ERR_SYNTAX = 8'h02;
+  localparam ERR_DIV_ZERO = 8'h04;
 
-  localparam S_IDLE = 2'd0;
-  localparam S_COMPUTE = 2'd1;
-  localparam S_DONE = 2'd2;
+  // States
+  localparam S_IDLE = 4'd0;
+  localparam S_PARSE = 4'd1;
+  localparam S_PARSE_WAIT = 4'd2;
+  localparam S_EVAL_PASS1_SCAN = 4'd3;
+  localparam S_EVAL_PASS1_CALC = 4'd4;
+  localparam S_EVAL_PASS1_SHIFT = 4'd5;
+  localparam S_EVAL_PASS1_SHIFT_WAIT = 4'd10;
+  localparam S_EVAL_PASS2_SCAN = 4'd6;
+  localparam S_EVAL_PASS2_CALC = 4'd7;
+  localparam S_EVAL_PASS2_SHIFT = 4'd8;
+  localparam S_DONE = 4'd9;
 
-  reg [1:0] state;
-  reg [7:0] step;
-  reg signed [31:0] stack[0:7];
-  reg [7:0] sp;
-  reg [7:0] first_char_reg;
-  reg [7:0] second_char_reg;
+  reg [3:0] state, next_state;
+  reg [7:0] char_pos;
+  reg [7:0] current_char;
+
+  // Storage - using fixed size arrays
+  reg signed [31:0] nums[0:MAX_TOKENS-1];
+  reg [7:0] ops[0:MAX_TOKENS-1];
+  reg [4:0] num_cnt;
+  reg [4:0] op_cnt;
+  reg signed [31:0] temp_num;
+  reg building_number;
+  reg temp_neg;
+
+  // Evaluation
+  reg [4:0] eval_pos;
+  reg signed [31:0] op_result;
+  reg [4:0] shift_cnt;
+  reg need_shift;
+
   reg start_prev;
-
-  wire [7:0] first_char = expr_in[0+:8];
-  wire [7:0] second_char = expr_in[8+:8];
-
-  assign debug_first_reg = first_char_reg;
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -42,168 +59,218 @@ module expression_evaluator #(
       result <= 0;
       error_flags <= 0;
       done <= 0;
-      step <= 0;
-      sp <= 0;
-      first_char_reg <= 0;
-      second_char_reg <= 0;
+      char_pos <= 0;
+      num_cnt <= 0;
+      op_cnt <= 0;
+      temp_num <= 0;
+      building_number <= 0;
+      temp_neg <= 0;
+      eval_pos <= 0;
+      op_result <= 0;
+      shift_cnt <= 0;
+      need_shift <= 0;
       start_prev <= 0;
+      current_char <= 0;
+      next_state <= S_IDLE;
     end else begin
       start_prev <= start;
 
       case (state)
         S_IDLE: begin
           done <= 0;
-
-          // Capture ONLY on rising edge of start
           if (start && !start_prev) begin
-            first_char_reg  <= first_char;
-            second_char_reg <= second_char;
-          end
-
-          if (start) begin
-            state <= S_COMPUTE;
-            error_flags <= 0;
-            result <= 0;
-            step <= 0;
-            sp <= 0;
+            if (expr_len == 0) begin
+              error_flags <= ERR_EMPTY;
+              result <= 0;
+              done <= 1;
+            end else begin
+              state <= S_PARSE;
+              char_pos <= 0;
+              num_cnt <= 0;
+              op_cnt <= 0;
+              temp_num <= 0;
+              building_number <= 0;
+              temp_neg <= 0;
+              error_flags <= 0;
+            end
           end
         end
 
-        S_COMPUTE: begin
-          case (first_char_reg)
-            8'h36: begin  // "6+3-4/2" = 7
-              case (step)
-                0: begin
-                  stack[0] <= 6;
-                  step <= step + 1;
-                end
-                1: begin
-                  stack[1] <= 3;
-                  step <= step + 1;
-                end
-                2: begin
-                  stack[0] <= stack[0] + stack[1];
-                  step <= step + 1;
-                end
-                3: begin
-                  stack[1] <= 4;
-                  step <= step + 1;
-                end
-                4: begin
-                  stack[2] <= 2;
-                  step <= step + 1;
-                end
-                5: begin
-                  stack[1] <= stack[1] / stack[2];
-                  step <= step + 1;
-                end
-                6: begin
-                  stack[0] <= stack[0] - stack[1];
-                  step <= step + 1;
-                end
-                7: begin
-                  result <= stack[0];
-                  state  <= S_DONE;
-                end
-              endcase
+        S_PARSE: begin
+          if (char_pos < expr_len) begin
+            current_char <= expr_in[8*(MAX_LEN-1-char_pos)+:8];
+            state <= S_PARSE_WAIT;
+          end else begin
+            // End of parsing
+            if (building_number) begin
+              nums[num_cnt] <= temp_neg ? -temp_num : temp_num;
+              num_cnt <= num_cnt + 1;
             end
 
-            8'h31: begin  // "15/3+4" = 9
-              if (second_char_reg == 8'h35) begin
-                if (step == 0) begin
-                  stack[0] <= 15;
-                  step <= 1;
-                end else if (step == 1) begin
-                  stack[1] <= 3;
-                  step <= 2;
-                end else if (step == 2) begin
-                  stack[0] <= stack[0] / stack[1];
-                  step <= 3;
-                end else if (step == 3) begin
-                  stack[1] <= 4;
-                  step <= 4;
-                end else if (step == 4) begin
-                  stack[0] <= stack[0] + stack[1];
-                  step <= 5;
-                end else if (step == 5) begin
-                  result <= stack[0];
-                  state  <= S_DONE;
-                end
-              end else begin
-                result <= 32'sd240;
-                error_flags <= ERR_SYNTAX;
-                state <= S_DONE;
-              end
-            end
-
-            8'h38: begin  // "8*2-3" = 13
-              case (step)
-                0: begin
-                  stack[0] <= 8;
-                  step <= step + 1;
-                end
-                1: begin
-                  stack[1] <= 2;
-                  step <= step + 1;
-                end
-                2: begin
-                  stack[0] <= stack[0] * stack[1];
-                  step <= step + 1;
-                end
-                3: begin
-                  stack[1] <= 3;
-                  step <= step + 1;
-                end
-                4: begin
-                  stack[0] <= stack[0] - stack[1];
-                  step <= step + 1;
-                end
-                5: begin
-                  result <= stack[0];
-                  state  <= S_DONE;
-                end
-              endcase
-            end
-
-            8'h32: begin  // "20-6/2" = 17
-              if (second_char_reg == 8'h30) begin
-                if (step == 0) begin
-                  stack[0] <= 20;
-                  step <= 1;
-                end else if (step == 1) begin
-                  stack[1] <= 6;
-                  step <= 2;
-                end else if (step == 2) begin
-                  stack[2] <= 2;
-                  step <= 3;
-                end else if (step == 3) begin
-                  stack[1] <= stack[1] / stack[2];
-                  step <= 4;
-                end else if (step == 4) begin
-                  stack[0] <= stack[0] - stack[1];
-                  step <= 5;
-                end else if (step == 5) begin
-                  result <= stack[0];
-                  state  <= S_DONE;
-                end
-              end else begin
-                result <= 32'sd241;
-                error_flags <= ERR_SYNTAX;
-                state <= S_DONE;
-              end
-            end
-
-            default: begin
-              result <= 32'sd251;
+            if (num_cnt == 0 && !building_number) begin
               error_flags <= ERR_SYNTAX;
-              state <= S_DONE;
+              done <= 1;
+              state <= S_IDLE;
+            end else begin
+              eval_pos <= 0;
+              state <= S_EVAL_PASS1_SCAN;
             end
-          endcase
+          end
+        end
+
+        S_PARSE_WAIT: begin
+          if (current_char >= 8'h30 && current_char <= 8'h39) begin
+            // Digit
+            temp_num <= temp_num * 10 + (current_char - 8'h30);
+            building_number <= 1;
+            char_pos <= char_pos + 1;
+            state <= S_PARSE;
+          end else if (current_char == 8'h2B || current_char == 8'h2D || 
+                                 current_char == 8'h2A || current_char == 8'h2F) begin
+            // Operator
+            if (building_number) begin
+              nums[num_cnt] <= temp_neg ? -temp_num : temp_num;
+              num_cnt <= num_cnt + 1;
+              temp_num <= 0;
+              temp_neg <= 0;
+              building_number <= 0;
+              ops[op_cnt] <= current_char;
+              op_cnt <= op_cnt + 1;
+            end else if (current_char == 8'h2D && num_cnt == 0) begin
+              temp_neg <= 1;
+            end else begin
+              error_flags <= ERR_SYNTAX;
+              done <= 1;
+              state <= S_IDLE;
+            end
+            char_pos <= char_pos + 1;
+            state <= S_PARSE;
+          end else if (current_char == 8'h20 || current_char == 8'h00) begin
+            // Space/null
+            if (building_number) begin
+              nums[num_cnt] <= temp_neg ? -temp_num : temp_num;
+              num_cnt <= num_cnt + 1;
+              temp_num <= 0;
+              temp_neg <= 0;
+              building_number <= 0;
+            end
+            char_pos <= char_pos + 1;
+            state <= S_PARSE;
+          end else begin
+            error_flags <= ERR_SYNTAX;
+            done <= 1;
+            state <= S_IDLE;
+          end
+        end
+
+        // PASS 1: Handle * and /
+        S_EVAL_PASS1_SCAN: begin
+          if (eval_pos < op_cnt) begin
+            if (ops[eval_pos] == 8'h2A || ops[eval_pos] == 8'h2F) begin
+              // Found high precedence operator
+              state <= S_EVAL_PASS1_CALC;
+            end else begin
+              eval_pos <= eval_pos + 1;
+            end
+          end else begin
+            // Pass 1 complete, start pass 2
+            eval_pos <= 0;
+            state <= S_EVAL_PASS2_SCAN;
+          end
+        end
+
+        S_EVAL_PASS1_CALC: begin
+          if (ops[eval_pos] == 8'h2A) begin
+            op_result <= nums[eval_pos] * nums[eval_pos+1];
+            need_shift <= 1;
+            shift_cnt <= 0;
+            state <= S_EVAL_PASS1_SHIFT;
+          end else if (ops[eval_pos] == 8'h2F) begin
+            if (nums[eval_pos+1] == 0) begin
+              error_flags <= ERR_DIV_ZERO;
+              done <= 1;
+              state <= S_IDLE;
+            end else begin
+              // Perform signed division
+              op_result <= $signed(nums[eval_pos]) / $signed(nums[eval_pos+1]);
+              need_shift <= 1;
+              shift_cnt <= 0;
+              state <= S_EVAL_PASS1_SHIFT;
+            end
+          end else begin
+            // Should not reach here, but handle gracefully
+            error_flags <= ERR_SYNTAX;
+            done <= 1;
+            state <= S_IDLE;
+          end
+        end
+
+        S_EVAL_PASS1_SHIFT: begin
+          if (shift_cnt == 0) begin
+            // Store result
+            nums[eval_pos] <= op_result;
+            shift_cnt <= eval_pos + 1;
+          end else if (shift_cnt < MAX_TOKENS - 1) begin
+            // Shift arrays
+            nums[shift_cnt] <= nums[shift_cnt+1];
+            ops[shift_cnt-1] <= ops[shift_cnt];
+            shift_cnt <= shift_cnt + 1;
+          end else begin
+            // Shift complete
+            num_cnt <= num_cnt - 1;
+            op_cnt <= op_cnt - 1;
+            need_shift <= 0;
+            state <= S_EVAL_PASS1_SCAN;
+          end
+        end
+
+        // PASS 2: Handle + and -
+        S_EVAL_PASS2_SCAN: begin
+          if (eval_pos < op_cnt) begin
+            if (ops[eval_pos] == 8'h2B || ops[eval_pos] == 8'h2D) begin
+              state <= S_EVAL_PASS2_CALC;
+            end else begin
+              eval_pos <= eval_pos + 1;
+            end
+          end else begin
+            // Done
+            result <= nums[0];
+            done   <= 1;
+            state  <= S_DONE;
+          end
+        end
+
+        S_EVAL_PASS2_CALC: begin
+          if (ops[eval_pos] == 8'h2B) begin
+            op_result <= nums[eval_pos] + nums[eval_pos+1];
+          end else begin
+            op_result <= nums[eval_pos] - nums[eval_pos+1];
+          end
+          need_shift <= 1;
+          shift_cnt <= 0;
+          state <= S_EVAL_PASS2_SHIFT;
+        end
+
+        S_EVAL_PASS2_SHIFT: begin
+          if (shift_cnt == 0) begin
+            nums[eval_pos] <= op_result;
+            shift_cnt <= eval_pos + 1;
+          end else if (shift_cnt < MAX_TOKENS - 1) begin
+            nums[shift_cnt] <= nums[shift_cnt+1];
+            ops[shift_cnt-1] <= ops[shift_cnt];
+            shift_cnt <= shift_cnt + 1;
+          end else begin
+            num_cnt <= num_cnt - 1;
+            op_cnt <= op_cnt - 1;
+            need_shift <= 0;
+            state <= S_EVAL_PASS2_SCAN;
+          end
         end
 
         S_DONE: begin
-          done  <= 1;
-          state <= S_IDLE;
+          if (!start) begin
+            state <= S_IDLE;
+          end
         end
 
         default: state <= S_IDLE;
