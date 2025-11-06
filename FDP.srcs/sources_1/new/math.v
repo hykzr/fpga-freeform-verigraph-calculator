@@ -350,3 +350,124 @@ module math_tan_q16 (
     end
   end
 endmodule
+
+module math_sqrt_q16 (
+    input  wire               clk,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // operand (Q16.16), must be >= 0
+    output reg signed  [31:0] y,      // result  (Q16.16)
+    output reg                ready,  // 1-cycle pulse when y is valid
+    output reg         [ 7:0] err     // error flags (sticky until next start)
+);
+
+  // ---- Error bit map ------------------------------------------------------
+  localparam ERR_NEG_INPUT = 8'h01;  // a < 0
+  localparam ERR_DIV_ZERO = 8'h02;  // internal divide-by-zero guard tripped
+
+  // ---- Fixed-point constants ----------------------------------------------
+  localparam signed [31:0] ONE = 32'sh0001_0000;  // 1.0 in Q16.16
+  localparam signed [31:0] HALF = 32'sh0000_8000;  // 0.5 in Q16.16
+
+  // ---- Internal state ------------------------------------------------------
+  reg        [ 1:0] st;  // 0:IDLE, 1:ITER, 2:DONE
+  reg        [ 3:0] it;  // iteration counter (0..7)
+  reg signed [31:0] x;  // operand latched
+  reg signed [31:0] yk;  // current iterate
+  reg signed [31:0] yn;  // next iterate
+
+  // ---- Local fixed-point helpers (Q16.16) ---------------------------------
+  function automatic signed [31:0] qmul;
+    input signed [31:0] a, b;
+    reg signed [63:0] t;
+    begin
+      t = a * b;
+      qmul = t[47:16];  // keep Q16.16
+    end
+  endfunction
+
+  function automatic signed [31:0] qdiv;
+    input signed [31:0] a, b;
+    reg signed [63:0] t;
+    begin
+      // shift numerator by 16 to preserve Q16.16 on division
+      t = {a, 16'd0};
+      // Simple guard: if b==0, return 0 (and set an error flag in FSM)
+      qdiv = (b == 0) ? 32'sd0 : t / b;
+    end
+  endfunction
+
+  // ---- FSM ----------------------------------------------------------------
+  always @(posedge clk) begin
+    if (rst) begin
+      st    <= 2'd0;
+      it    <= 4'd0;
+      x     <= 32'sd0;
+      yk    <= 32'sd0;
+      yn    <= 32'sd0;
+      y     <= 32'sd0;
+      ready <= 1'b0;
+      err   <= 8'd0;
+    end else begin
+      // default
+      ready <= 1'b0;
+
+      case (st)
+        // IDLE / accept new job
+        2'd0: begin
+          if (start) begin
+            err <= 8'd0;  // clear sticky errors on new start
+
+            // Negative input -> error, return 0 immediately
+            if (a < 0) begin
+              y     <= 32'sd0;
+              ready <= 1'b1;
+              err   <= ERR_NEG_INPUT;
+              st    <= 2'd0;  // stay idle (single-cycle ready pulse)
+            end  // Zero -> valid result 0 (no error)
+            else if (a == 0) begin
+              y     <= 32'sd0;
+              ready <= 1'b1;
+              st    <= 2'd0;
+            end else begin
+              // latch operand and initialize iterate
+              x  <= a;
+              // Good heuristic: y0 = max(1.0, a/2) to keep divisor non-zero
+              yk <= (a < ONE) ? ONE : (a >>> 1);
+              it <= 4'd0;
+              st <= 2'd1;  // ITER
+            end
+          end
+        end
+
+        // ITER: Newton step y_{k+1} = 0.5 * ( yk + x/yk )
+        2'd1: begin
+          // Divide guard: if yk==0 (shouldn't happen with our init), flag & recover
+          if (yk == 0) begin
+            err <= err | ERR_DIV_ZERO;
+            // Nudge away from zero to continue (keeps resource use tiny)
+            yk  <= ONE;  // restart iterate at 1.0
+          end else begin
+            yn <= qmul(HALF, (yk + qdiv(x, yk)));
+            yk <= yn;
+            it <= it + 1'b1;
+            // After 8 iterations, settle (good for Q16.16)
+            if (it == 4'd7) begin
+              y  <= yn;
+              st <= 2'd2;  // DONE
+            end
+          end
+        end
+
+        // DONE: assert ready for 1 cycle, then return to IDLE
+        2'd2: begin
+          ready <= 1'b1;
+          st    <= 2'd0;
+        end
+
+        default: st <= 2'd0;
+      endcase
+    end
+  end
+
+endmodule
