@@ -609,6 +609,18 @@ module font5x7_rom (
           default: bits = 5'b00000;
         endcase
       end
+      ",": begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b00000;
+          3'd2: bits = 5'b00000;
+          3'd3: bits = 5'b00000;
+          3'd4: bits = 5'b00110;
+          3'd5: bits = 5'b00110;
+          3'd6: bits = 5'b01100;
+          default: bits = 5'b00000;
+        endcase
+      end
       "<": begin
         case (row)
           3'd0: bits = 5'b00010;

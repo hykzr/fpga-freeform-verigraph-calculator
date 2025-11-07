@@ -463,111 +463,117 @@ module math_mul_q16 (
   end
 endmodule
 
-module math_div_q16 (
-    input wire clk,
-    rst,
-    start,
-    input wire signed [31:0] a,
-    b,
-    output reg signed [31:0] y,
-    output reg signed [31:0] remainder,
-    output reg ready,
-    output reg [7:0] err
+module compute_div_q16 (
+    input  wire               clk,
+    input  wire               rst,    // synchronous, active-high
+    input  wire               start,  // 1-cycle pulse when idle
+    input  wire signed [31:0] a,      // Q16.16
+    input  wire signed [31:0] b,      // Q16.16
+    output reg signed  [31:0] y,      // Q16.16
+    output reg                ready,  // 1-cycle pulse
+    output reg         [ 7:0] err
 );
-  reg [5:0] state;
-  reg [5:0] bit_count;
-  reg a_sign;
-  reg b_sign;
-  reg [47:0] dividend;
-  reg [31:0] divisor;
-  reg [47:0] quotient;
-  reg [47:0] partial_rem;
-  reg [48:0] temp_sub;
 
-  always @(posedge clk or posedge rst) begin
+  // ---- Error bits ----
+  localparam [7:0] ERR_DIV0 = 8'h01;
+  localparam [7:0] ERR_OVF = 8'h02;
+
+  // ---- Saturation constants ----
+  // Q16.16 max/min representable values
+  localparam signed [31:0] Q16_MAX = 32'sh7FFF_FFFF;  // +32767.9999847...
+  localparam signed [31:0] Q16_MIN = 32'sh8000_0000;  // -32768.0
+
+  // ---- Internal state ----
+  reg         running;
+  reg  [ 5:0] cnt;  // counts 48..1
+  reg         sign_q;  // sign of result = a[31] ^ b[31]
+
+  reg  [47:0] dividend;  // |a| << 16 (to keep Q16.16)
+  reg  [31:0] divisor;  // |b|
+  reg  [32:0] rem;  // remainder (33 bits for compare/sub)
+  reg  [47:0] quo;  // 48-bit quotient accumulator
+
+  // Next-state temporaries (declared at module scope for Verilog-2001)
+  reg  [32:0] rem_n;
+  reg  [47:0] quo_n;
+  reg  [47:0] dividend_n;
+
+  wire [31:0] abs_a = a[31] ? (~a + 32'sd1) : a;
+  wire [31:0] abs_b = b[31] ? (~b + 32'sd1) : b;
+
+  always @(posedge clk) begin
     if (rst) begin
-      y <= 32'sd0;
-      remainder <= 32'sd0;
-      ready <= 1'b0;
-      err <= 8'd0;
-      state <= 6'd0;
-      bit_count <= 6'd0;
-      a_sign <= 1'b0;
-      b_sign <= 1'b0;
+      running  <= 1'b0;
+      cnt      <= 6'd0;
+      sign_q   <= 1'b0;
       dividend <= 48'd0;
-      divisor <= 32'd0;
-      quotient <= 48'd0;
-      partial_rem <= 48'd0;
-      temp_sub <= 49'd0;
+      divisor  <= 32'd0;
+      rem      <= 33'd0;
+      quo      <= 48'd0;
+      y        <= 32'sd0;
+      ready    <= 1'b0;
+      err      <= 8'd0;
     end else begin
-      case (state)
-        6'd0: begin
-          ready <= 1'b0;
-          if (start) begin
-            if (b == 32'sd0) begin
-              y <= 32'sd0;
-              remainder <= 32'sd0;
-              err <= 8'h02;
-              ready <= 1'b1;
-              state <= 6'd0;
-            end else begin
-              a_sign <= a[31];
-              b_sign <= b[31];
-              dividend <= (a[31] ? -a : a);
-              divisor <= (b[31] ? -b : b);
-              quotient <= 48'd0;
-              partial_rem <= 48'd0;
-              bit_count <= 6'd47;
-              state <= 6'd1;
-            end
-          end
+      // default outputs each cycle
+      ready <= 1'b0;
+
+      // Start a new division when idle
+      if (start && !running) begin
+        err    <= 8'd0;
+        sign_q <= a[31] ^ b[31];
+
+        if (b == 32'sd0) begin
+          // Divide-by-zero: saturate toward +/- infinity based on 'a' sign
+          y       <= a[31] ? Q16_MIN : Q16_MAX;
+          err     <= ERR_DIV0;
+          ready   <= 1'b1;  // immediate result
+          running <= 1'b0;
+        end else begin
+          dividend <= {abs_a, 16'h0000};  // shift to align Q16.16
+          divisor  <= abs_b;
+          rem      <= 33'd0;
+          quo      <= 48'd0;
+          cnt      <= 6'd48;
+          running  <= 1'b1;
+        end
+      end  // Iterative restoring division (1 bit per cycle)
+      else if (running) begin
+        // Build next-state using current registers
+        rem_n      = {rem[31:0], dividend[47]};  // shift-in next bit
+        dividend_n = {dividend[46:0], 1'b0};  // shift left
+        // provisional shift of quotient; set LSB if subtraction succeeds
+        if (rem_n >= {1'b0, divisor}) begin
+          rem_n = rem_n - {1'b0, divisor};
+          quo_n = {quo[46:0], 1'b1};
+        end else begin
+          quo_n = {quo[46:0], 1'b0};
         end
 
-        6'd1: begin
-          partial_rem <= partial_rem << 1;
-          partial_rem[0] <= dividend[bit_count];
-          state <= 6'd2;
-        end
+        // Register next-state
+        rem      <= rem_n;
+        dividend <= dividend_n;
+        quo      <= quo_n;
 
-        6'd2: begin
-          temp_sub <= partial_rem - {16'd0, divisor, 1'b0};
-          state <= 6'd3;
-        end
+        // Countdown
+        if (cnt != 0) cnt <= cnt - 6'd1;
 
-        6'd3: begin
-          if (!temp_sub[48]) begin
-            partial_rem <= temp_sub[47:0];
-            quotient[bit_count] <= 1'b1;
-          end
+        // Finish when last bit is resolved
+        if (cnt == 6'd1) begin
+          running <= 1'b0;
 
-          if (bit_count == 6'd0) begin
-            state <= 6'd4;
+          // Detect overflow: upper 16 bits of 48-bit quotient are non-zero
+          if (|quo_n[47:32]) begin
+            y   <= (sign_q ? Q16_MIN : Q16_MAX);
+            err <= err | ERR_OVF;
           end else begin
-            bit_count <= bit_count - 6'd1;
-            state <= 6'd1;
+            // Apply sign to 32-bit result
+            if (sign_q) y <= -$signed(quo_n[31:0]);
+            else y <= $signed(quo_n[31:0]);
           end
+
+          ready <= 1'b1;  // 1-cycle pulse
         end
-
-        6'd4: begin
-          if (a_sign ^ b_sign) begin
-            y <= -(quotient[31:0]);
-          end else begin
-            y <= quotient[31:0];
-          end
-
-          if (a_sign) begin
-            remainder <= -(partial_rem[31:0]);
-          end else begin
-            remainder <= partial_rem[31:0];
-          end
-
-          err   <= 8'd0;
-          ready <= 1'b1;
-          state <= 6'd0;
-        end
-
-        default: state <= 6'd0;
-      endcase
+      end
     end
   end
 endmodule
@@ -1156,6 +1162,10 @@ module math_ln_q16 (
   reg [5:0] n;
   reg [4:0] scale_count;
 
+  // Pipeline registers for division and multiplication
+  reg signed [63:0] power_next;
+  reg signed [31:0] term_next;
+
   always @(posedge clk or posedge rst) begin
     if (rst) begin
       y <= 32'sd0;
@@ -1169,6 +1179,8 @@ module math_ln_q16 (
       x_minus_1 <= 32'sd0;
       n <= 6'd0;
       scale_count <= 5'd0;
+      power_next <= 64'sd0;
+      term_next <= 32'sd0;
     end else begin
       case (state)
         6'd0: begin
@@ -1208,7 +1220,12 @@ module math_ln_q16 (
         end
         6'd2: begin
           x_minus_1 <= x - 32'sd65536;
-          power <= {(x - 32'sd65536), 16'd0};
+          // Wait one cycle for x_minus_1 to be ready
+          state <= 6'd5;
+        end
+        6'd5: begin
+          // Now x_minus_1 is stable
+          power <= {x_minus_1, 16'd0};
           n <= 6'd1;
           state <= 6'd3;
         end
@@ -1219,17 +1236,27 @@ module math_ln_q16 (
             ready <= 1'b1;
             state <= 6'd0;
           end else begin
-            term  <= power[47:16] / $signed({26'd0, n});
-            state <= 6'd4;
+            // Calculate division, but don't use result yet
+            term_next <= power[47:16] / $signed({26'd0, n});
+            state <= 6'd6;
           end
         end
+        6'd6: begin
+          // Pipeline stage: division result is now stable
+          term <= term_next;
+          // Pre-calculate multiplication for next iteration
+          power_next <= (power[47:16] * x_minus_1);
+          state <= 6'd4;
+        end
         6'd4: begin
+          // Now term is stable, update result
           if (n[0] == 1'b1) begin
             result <= result + term;
           end else begin
             result <= result - term;
           end
-          power <= (power[47:16] * x_minus_1);
+          // Power update is now stable
+          power <= power_next;
           n <= n + 6'd1;
           state <= 6'd3;
         end
