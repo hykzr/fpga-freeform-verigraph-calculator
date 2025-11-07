@@ -10,15 +10,13 @@ module expression_evaluator #(
     input  wire signed [         31:0] x_value,
     output reg signed  [         31:0] result,
     output reg         [          7:0] error_flags,
-    output reg                         done,
-    output wire                        tok_done,
-    rpn_done
+    output reg                         done
 );
   wire [32:0] tok_d;
   wire tok_v, tok_rdy;
   wire [7:0] tok_err;
-
-  tokenizer33 #(
+  wire tok_done, rpn_done;
+  tokenizer #(
       .MAX_LEN(MAX_LEN),
       .MAX_TOKENS(MAX_TOKENS)
   ) U_TOK (
@@ -39,7 +37,7 @@ module expression_evaluator #(
   wire rpn_v, rpn_rdy;
   wire [7:0] rpn_err;
 
-  shunting_yard33 #(
+  shunting_yard #(
       .MAX_TOKENS(MAX_TOKENS)
   ) U_S (
       .clk(clk),
@@ -58,7 +56,7 @@ module expression_evaluator #(
   wire               eval_done;
   wire        [ 7:0] eval_err;
 
-  rpn_eval33 #(
+  rpn_eval #(
       .MAX_TOKENS(MAX_TOKENS)
   ) U_E (
       .clk(clk),

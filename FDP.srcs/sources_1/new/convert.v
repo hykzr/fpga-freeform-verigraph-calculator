@@ -442,20 +442,23 @@ module q16_to_str3 (
     output reg                    done
 );
 
-  reg [ 2:0] state;
-  reg        is_neg;
+  reg [2:0] state;
+  reg is_neg;
   reg [31:0] abs_val;
   reg [15:0] int_part;
   reg [31:0] frac_scaled;
   reg [31:0] frac_rounded;
-  reg [ 9:0] frac_final;
-  reg [ 7:0] temp_str         [0:9];
-  reg [ 3:0] int_digits       [0:4];
-  reg [ 3:0] frac_digits      [0:2];
-  reg [ 3:0] int_digit_count;
-  reg [ 3:0] frac_digit_count;
-  reg [ 7:0] write_pos;
-  reg [ 3:0] i;
+  reg [9:0] frac_final;
+
+  // Use flat bit vectors instead of 2D arrays
+  reg [79:0] temp_str;  // 10 bytes x 8 bits
+  reg [19:0] int_digits;  // 5 digits x 4 bits  
+  reg [11:0] frac_digits;  // 3 digits x 4 bits
+
+  reg [3:0] int_digit_count;
+  reg [3:0] frac_digit_count;
+  reg [7:0] write_pos;
+  reg [3:0] i;
 
   always @(posedge clk) begin
     if (rst) begin
@@ -469,35 +472,19 @@ module q16_to_str3 (
       frac_scaled <= 0;
       frac_rounded <= 0;
       frac_final <= 0;
+      temp_str <= 0;
+      int_digits <= 0;
+      frac_digits <= 0;
       int_digit_count <= 0;
       frac_digit_count <= 0;
       write_pos <= 0;
       i <= 0;
-      temp_str[0] <= 0;
-      temp_str[1] <= 0;
-      temp_str[2] <= 0;
-      temp_str[3] <= 0;
-      temp_str[4] <= 0;
-      temp_str[5] <= 0;
-      temp_str[6] <= 0;
-      temp_str[7] <= 0;
-      temp_str[8] <= 0;
-      temp_str[9] <= 0;
-      int_digits[0] <= 0;
-      int_digits[1] <= 0;
-      int_digits[2] <= 0;
-      int_digits[3] <= 0;
-      int_digits[4] <= 0;
-      frac_digits[0] <= 0;
-      frac_digits[1] <= 0;
-      frac_digits[2] <= 0;
     end else begin
       done <= 0;
 
       case (state)
         0: begin  // IDLE
           if (start) begin
-            // Check sign
             is_neg  <= val_q16[31];
             abs_val <= val_q16[31] ? -val_q16 : val_q16;
             state   <= 1;
@@ -506,27 +493,23 @@ module q16_to_str3 (
 
         1: begin  // Extract integer and fractional parts
           int_part <= abs_val[31:16];
-          // Scale fractional part: (frac * 1000) / 65536
-          // frac_scaled = abs_val[15:0] * 1000
           frac_scaled <= abs_val[15:0] * 32'd1000;
           state <= 2;
         end
 
         2: begin  // Divide and round
-          // frac_scaled / 65536 with rounding
-          // Add 32768 for rounding before division
           frac_rounded <= frac_scaled + 32'd32768;
           state <= 3;
         end
 
         3: begin  // Complete rounding
-          frac_final <= frac_rounded[25:16];  // Divide by 65536 (shift right 16)
+          frac_final <= frac_rounded[25:16];
 
-          // Check if integer part is 0 and frac is 0
+          // FIX: Check for zero and output "0" with length 1
           if (int_part == 0 && frac_rounded[25:16] == 0) begin
             // Special case: output "0"
-            temp_str[0] <= 8'd48;  // '0'
-            str_len <= 1;
+            temp_str[7:0] <= 8'd48;  // '0' at position 0
+            write_pos <= 1;  // CRITICAL FIX: was missing
             state <= 7;  // Skip to done
           end else begin
             state <= 4;
@@ -535,36 +518,36 @@ module q16_to_str3 (
 
         4: begin  // Convert integer part to digits
           if (int_part >= 10000) begin
-            int_digits[4]   <= int_part / 10000;
-            int_digits[3]   <= (int_part / 1000) % 10;
-            int_digits[2]   <= (int_part / 100) % 10;
-            int_digits[1]   <= (int_part / 10) % 10;
-            int_digits[0]   <= int_part % 10;
-            int_digit_count <= 5;
+            int_digits[19:16] <= int_part / 10000;
+            int_digits[15:12] <= (int_part / 1000) % 10;
+            int_digits[11:8]  <= (int_part / 100) % 10;
+            int_digits[7:4]   <= (int_part / 10) % 10;
+            int_digits[3:0]   <= int_part % 10;
+            int_digit_count   <= 5;
           end else if (int_part >= 1000) begin
-            int_digits[3]   <= int_part / 1000;
-            int_digits[2]   <= (int_part / 100) % 10;
-            int_digits[1]   <= (int_part / 10) % 10;
-            int_digits[0]   <= int_part % 10;
-            int_digit_count <= 4;
+            int_digits[15:12] <= int_part / 1000;
+            int_digits[11:8]  <= (int_part / 100) % 10;
+            int_digits[7:4]   <= (int_part / 10) % 10;
+            int_digits[3:0]   <= int_part % 10;
+            int_digit_count   <= 4;
           end else if (int_part >= 100) begin
-            int_digits[2]   <= int_part / 100;
-            int_digits[1]   <= (int_part / 10) % 10;
-            int_digits[0]   <= int_part % 10;
-            int_digit_count <= 3;
+            int_digits[11:8] <= int_part / 100;
+            int_digits[7:4]  <= (int_part / 10) % 10;
+            int_digits[3:0]  <= int_part % 10;
+            int_digit_count  <= 3;
           end else if (int_part >= 10) begin
-            int_digits[1]   <= int_part / 10;
-            int_digits[0]   <= int_part % 10;
+            int_digits[7:4] <= int_part / 10;
+            int_digits[3:0] <= int_part % 10;
             int_digit_count <= 2;
           end else begin
-            int_digits[0]   <= int_part;
+            int_digits[3:0] <= int_part;
             int_digit_count <= 1;
           end
 
           // Convert fractional part to digits
-          frac_digits[2] <= frac_final / 100;
-          frac_digits[1] <= (frac_final / 10) % 10;
-          frac_digits[0] <= frac_final % 10;
+          frac_digits[11:8] <= frac_final / 100;
+          frac_digits[7:4]  <= (frac_final / 10) % 10;
+          frac_digits[3:0]  <= frac_final % 10;
 
           // Trim trailing zeros
           if ((frac_final % 10) != 0) begin
@@ -578,43 +561,40 @@ module q16_to_str3 (
           end
 
           write_pos <= 0;
+          temp_str <= 0;
           state <= 5;
         end
 
-        5: begin  // Build string
-          // Add sign if negative
+        5: begin  // Add sign if negative
           if (is_neg) begin
-            temp_str[write_pos] <= 8'd45;  // '-'
-            write_pos <= write_pos + 1;
+            temp_str[7:0] <= 8'd45;  // '-'
+            write_pos <= 1;
           end
-
-          // Add integer digits
           i <= 0;
           state <= 6;
         end
 
         6: begin  // Write digits
           if (i < int_digit_count) begin
-            temp_str[write_pos] <= 8'd48 + int_digits[int_digit_count-1-i];
+            // Write integer digits MSB to LSB
+            // Access digit at position (int_digit_count-1-i)
+            case (int_digit_count - 1 - i)
+              0: temp_str[write_pos*8+:8] <= 8'd48 + int_digits[3:0];
+              1: temp_str[write_pos*8+:8] <= 8'd48 + int_digits[7:4];
+              2: temp_str[write_pos*8+:8] <= 8'd48 + int_digits[11:8];
+              3: temp_str[write_pos*8+:8] <= 8'd48 + int_digits[15:12];
+              4: temp_str[write_pos*8+:8] <= 8'd48 + int_digits[19:16];
+            endcase
             write_pos <= write_pos + 1;
             i <= i + 1;
-          end else if (frac_digit_count > 0) begin
+          end else if (frac_digit_count > 0 && i == int_digit_count) begin
             // Add decimal point
-            temp_str[write_pos] <= 8'd46;  // '.'
-            write_pos <= write_pos + 1;
-            i <= 0;
-            state <= 6;
+            temp_str[write_pos*8+:8] <= 8'd46;  // '.'
 
-            // Add fractional digits
-            if (frac_digit_count >= 1) begin
-              temp_str[write_pos+1] <= 8'd48 + frac_digits[2];
-            end
-            if (frac_digit_count >= 2) begin
-              temp_str[write_pos+2] <= 8'd48 + frac_digits[1];
-            end
-            if (frac_digit_count >= 3) begin
-              temp_str[write_pos+3] <= 8'd48 + frac_digits[0];
-            end
+            // Add fractional digits - unroll to avoid complex indexing
+            if (frac_digit_count >= 1) temp_str[(write_pos+1)*8+:8] <= 8'd48 + frac_digits[11:8];
+            if (frac_digit_count >= 2) temp_str[(write_pos+2)*8+:8] <= 8'd48 + frac_digits[7:4];
+            if (frac_digit_count >= 3) temp_str[(write_pos+3)*8+:8] <= 8'd48 + frac_digits[3:0];
 
             write_pos <= write_pos + 1 + frac_digit_count;
             state <= 7;
@@ -625,21 +605,12 @@ module q16_to_str3 (
 
         7: begin  // Finalize
           str_len <= write_pos;
-          str_le <= {
-            temp_str[9],
-            temp_str[8],
-            temp_str[7],
-            temp_str[6],
-            temp_str[5],
-            temp_str[4],
-            temp_str[3],
-            temp_str[2],
-            temp_str[1],
-            temp_str[0]
-          };
+          str_le <= temp_str;
           done <= 1;
           state <= 0;
         end
+
+        default: state <= 0;
       endcase
     end
   end

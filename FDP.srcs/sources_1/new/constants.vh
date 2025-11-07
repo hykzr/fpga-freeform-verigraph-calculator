@@ -17,6 +17,7 @@
 `define MIN_KEY    8'h8B
 `define MAX_KEY    8'h8C
 `define POW_KEY    8'h8D
+`define BACK_KEY    8'h8E
 
 // Special bracket glyphs for rendering
 `define CEIL_L_KEY   8'h90  // ⌈
@@ -24,11 +25,15 @@
 `define FLOOR_L_KEY  8'h92  // ⌊
 `define FLOOR_R_KEY  8'h93  // ⌋
 
-`define BACK_KEY   8'h8E  // Backspace/delete last char
-
 // ---- Display geometry (SSD1331/96x64) ----
 `define DISP_W 96
 `define DISP_H 64
+
+`define TK_KIND_OP    4'd1
+`define TK_KIND_LPAREN 4'd2
+`define TK_KIND_RPAREN 4'd3
+`define TK_KIND_FUNC  4'd4
+`define TK_KIND_END   4'd15
 
 // ---- Theme (RGB565) ----
 `define C_BG     16'h0000
@@ -37,19 +42,39 @@
 `define C_TEXT   16'hFFFF
 `define C_BORDER 16'h0841
 
-// ---- Operators (3 bits) ----
-`define OP_NONE 3'd0
-`define OP_ADD  3'd1
-`define OP_SUB  3'd2
-`define OP_MUL  3'd3
-`define OP_DIV  3'd4
+`define OP_ADD    4'd0
+`define OP_SUB    4'd1
+`define OP_MUL    4'd2
+`define OP_DIV    4'd3
+`define OP_POW    4'd4
+`define OP_UN_NEG 4'd5
+`define OP_REM    4'd6  // Remainder/modulo
+`define OP_AND    4'd7  // Bitwise AND
+`define OP_OR     4'd8  // Bitwise OR
+`define OP_XOR    4'd9  // Bitwise XOR
+
+`define FN_SIN    4'd0
+`define FN_COS    4'd1
+`define FN_TAN    4'd2
+`define FN_CEIL   4'd3
+`define FN_FLOOR  4'd4
+`define FN_ROUND  4'd5
+`define FN_SQRT   4'd6
+`define FN_ABS    4'd7
+`define FN_MAX    4'd8
+`define FN_MIN    4'd9
+`define FN_NOT    4'd10
+`define FN_POW    4'd11
+`define FN_LN    4'd12
+`define FN_LOG    4'd13
 
 // ---- Input error flags (4 bits) ----
-`define ERR_NONE         4'b0000
-`define ERR_EMPTY        4'b0001
-`define ERR_MISSING_OPER 4'b0010
-`define ERR_TOO_MANY_OPS 4'b0100
-`define ERR_OVERFLOW     4'b1000
+`define ERR_NONE        8'h00
+`define ERR_NEG_INPUT   8'h01  // sqrt of negative
+`define ERR_DIV_ZERO    8'h02  // division by zero
+`define ERR_SYNTAX      8'h04  // parse error
+`define ERR_UNDERFLOW   8'h10  // stack underflow
+`define ERR_OVERFLOW    8'h20  // arithmetic overflow/saturation
 
 // ---- Protocol CMDs (on-wire) ----
 `define CMD_TEXT  8'h10   // set/render text payload
@@ -61,6 +86,10 @@
 `define END_BYTE 8'h55   // clear remote display/buffer
 `endif // EE2026_CONSTANTS_VF
 
-`define Q16_16_ONE   32'sd65536
+`define Q16_PI    32'sd205887   // π ≈ 3.14159 in Q16.16
+`define Q16_E     32'sd178145   // e ≈ 2.71828 in Q16.16
+`define Q16_ONE   32'sd65536    // 1.0 in Q16.16
+`define Q16_ZERO  32'sd0        // 0.0 in Q16.16
+
 `define TO_Q16_16(x) ( (x) <<< 16 )
 `define FROM_Q16_16(x) ( (x) >>> 16 )

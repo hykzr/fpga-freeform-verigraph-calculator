@@ -84,8 +84,8 @@ module range_planner (
   always @* begin
     if (zoom_exp >= 0) x_start_q16_16 = (neg_cx_q >>> zoom_exp) - offset_x_q16_16;
     else x_start_q16_16 = (neg_cx_q <<< e_neg) - offset_x_q16_16;
-    if (zoom_exp >= 0) x_step_q16_16 = (`Q16_16_ONE >>> zoom_exp);
-    else x_step_q16_16 = (`Q16_16_ONE <<< e_neg);
+    if (zoom_exp >= 0) x_step_q16_16 = (`Q16_ONE >>> zoom_exp);
+    else x_step_q16_16 = (`Q16_ONE <<< e_neg);
   end
 endmodule
 
