@@ -540,11 +540,11 @@ module font5x7_rom (
       "x": begin
         case (row)
           3'd0: bits = 5'b00000;
-          3'd1: bits = 5'b10001;
+          3'd1: bits = 5'b11011;
           3'd2: bits = 5'b01010;
           3'd3: bits = 5'b00100;
           3'd4: bits = 5'b01010;
-          3'd5: bits = 5'b10001;
+          3'd5: bits = 5'b11011;
           3'd6: bits = 5'b00000;
           default: bits = 5'b00000;
         endcase
