@@ -18,7 +18,6 @@ module Top_Student (
     inout wire PS2Data
 );
   localparam MAX_DATA = 32;
-  // Set to 1 if OLED is mounted upside down
   localparam OLED_ROTATE_180 = 1;
 
   wire rst = sw[15];
@@ -74,7 +73,6 @@ module Top_Student (
       .mouse_new_event()
   );
 
-  // Mouse mode switch (0=keypad, 1=graph)
   wire mouse_mode;
   mouse_mode_switch mode_sw (
       .clk(clk),

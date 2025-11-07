@@ -137,6 +137,8 @@ module tokenizer #(
                     tok_buf_n = {1'b0, pack_op(`OP_AND)}; i_n=i+8'd1; s_n=S_EMIT;
                 end else if (ch=="|") begin
                     tok_buf_n = {1'b0, pack_op(`OP_OR)}; i_n=i+8'd1; s_n=S_EMIT;
+                end else if (ch=="^") begin
+                    tok_buf_n = {1'b0, pack_op(`OP_XOR)}; i_n=i+8'd1; s_n=S_EMIT;
                 end else if (ch=="~") begin
                     tok_buf_n = {1'b0, pack_fn(`FN_NOT)}; i_n=i+8'd1; s_n=S_EMIT;
                 end else if (is_sin || is_sin_key) begin

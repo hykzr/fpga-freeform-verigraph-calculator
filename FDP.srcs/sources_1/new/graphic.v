@@ -199,13 +199,38 @@ module mapper_plot_points (
   // unit dot at (4,0)
   wire on_unit = unit_inb && (sx == px_unit[6:0]) && (sy == py_unit[5:0]);
 
-  // curve pixel - only show if show_curves is true
-  wire on_curve = show_curves && curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
+  // curve pixel - check exact match at current x
+  wire on_curve_point = show_curves && curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
                   && curve_y[sx*6+1] == sy[1]
                   && curve_y[sx*6+2] == sy[2]
                   && curve_y[sx*6+3] == sy[3]
                   && curve_y[sx*6+4] == sy[4]
                   && curve_y[sx*6+5] == sy[5];
+
+  // interpolation - check if pixel is on line between sx and sx+1
+  wire has_next = (sx != SCREEN_W - 1);
+  wire both_valid = curve_y_valid[sx] && curve_y_valid[sx+1];
+  wire [5:0] y0 = {
+    curve_y[sx*6+5],
+    curve_y[sx*6+4],
+    curve_y[sx*6+3],
+    curve_y[sx*6+2],
+    curve_y[sx*6+1],
+    curve_y[sx*6]
+  };
+  wire [5:0] y1 = {
+    curve_y[(sx+1)*6+5],
+    curve_y[(sx+1)*6+4],
+    curve_y[(sx+1)*6+3],
+    curve_y[(sx+1)*6+2],
+    curve_y[(sx+1)*6+1],
+    curve_y[(sx+1)*6]
+  };
+  wire signed [6:0] y_min = (y0 < y1) ? {1'b0, y0} : {1'b0, y1};
+  wire signed [6:0] y_max = (y0 < y1) ? {1'b0, y1} : {1'b0, y0};
+  wire on_curve_interp = show_curves && has_next && both_valid && ({1'b0, sy} >= y_min) && ({1'b0, sy} <= y_max);
+
+  wire on_curve = on_curve_point || on_curve_interp;
 
   // priority: curve > origin > unit > axes > bg
   assign pixel_colour =

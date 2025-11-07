@@ -176,7 +176,7 @@ module compute_link #(
           if (eval_done) begin
             graph_y_q16_16 <= eval_result;
             eval_result_latched <= eval_result;
-            graph_y_valid <= 1'b1;
+            graph_y_valid <= (eval_error != 0);
             graph_y_ready_internal <= 1'b1;
             state <= S_IDLE;
           end

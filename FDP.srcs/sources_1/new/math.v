@@ -463,14 +463,15 @@ module math_mul_q16 (
   end
 endmodule
 
-module compute_div_q16 (
+module math_div_q16 (
     input  wire               clk,
-    input  wire               rst,    // synchronous, active-high
-    input  wire               start,  // 1-cycle pulse when idle
-    input  wire signed [31:0] a,      // Q16.16
-    input  wire signed [31:0] b,      // Q16.16
-    output reg signed  [31:0] y,      // Q16.16
-    output reg                ready,  // 1-cycle pulse
+    input  wire               rst,        // synchronous, active-high
+    input  wire               start,      // 1-cycle pulse when idle
+    input  wire signed [31:0] a,          // Q16.16
+    input  wire signed [31:0] b,          // Q16.16
+    output reg signed  [31:0] y,          // Q16.16
+    output reg signed  [31:0] remainder,
+    output reg                ready,      // 1-cycle pulse
     output reg         [ 7:0] err
 );
 
@@ -503,16 +504,17 @@ module compute_div_q16 (
 
   always @(posedge clk) begin
     if (rst) begin
-      running  <= 1'b0;
-      cnt      <= 6'd0;
-      sign_q   <= 1'b0;
-      dividend <= 48'd0;
-      divisor  <= 32'd0;
-      rem      <= 33'd0;
-      quo      <= 48'd0;
-      y        <= 32'sd0;
-      ready    <= 1'b0;
-      err      <= 8'd0;
+      running   <= 1'b0;
+      cnt       <= 6'd0;
+      sign_q    <= 1'b0;
+      dividend  <= 48'd0;
+      divisor   <= 32'd0;
+      rem       <= 33'd0;
+      quo       <= 48'd0;
+      y         <= 32'sd0;
+      ready     <= 1'b0;
+      err       <= 8'd0;
+      remainder <= 0;
     end else begin
       // default outputs each cycle
       ready <= 1'b0;
@@ -569,6 +571,7 @@ module compute_div_q16 (
             // Apply sign to 32-bit result
             if (sign_q) y <= -$signed(quo_n[31:0]);
             else y <= $signed(quo_n[31:0]);
+            remainder <= $signed(rem[31:0]);
           end
 
           ready <= 1'b1;  // 1-cycle pulse

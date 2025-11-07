@@ -196,7 +196,7 @@ module mouse_drag_ctrl (
     input wire [5:0] mouse_y,
     input wire [3:0] mouse_z,
     input wire mouse_left,
-    output reg drag_active,
+    output wire drag_active,
     output reg signed [7:0] drag_delta_x,
     output reg signed [6:0] drag_delta_y,
     output reg zoom_in,
@@ -212,10 +212,10 @@ module mouse_drag_ctrl (
   wire signed [3:0] last_z_signed = $signed(last_z);
   wire z_scroll_up = (z_signed > 4'sd0) && (last_z_signed == 4'sd0);
   wire z_scroll_down = (z_signed < 4'sd0) && (last_z_signed == 4'sd0);
-
+  assign drag_active = (drag_delta_x != 0) || (drag_delta_y != 0);
   always @(posedge clk) begin
     if (rst) begin
-      drag_active <= 0;
+      //drag_active <= 0;
       drag_delta_x <= 0;
       drag_delta_y <= 0;
       last_x <= 0;
@@ -233,21 +233,21 @@ module mouse_drag_ctrl (
       // Drag detection and delta calculation
       if (!drag_was_active && mouse_left) begin
         // Start drag
-        drag_active <= 1;
+        //drag_active <= 1;
         last_x <= mouse_x;
         last_y <= mouse_y;
         drag_delta_x <= 0;
         drag_delta_y <= 0;
       end else if (drag_was_active && mouse_left) begin
         // Continue drag - output delta since last frame
-        drag_active <= 1;
+        //drag_active <= 1;
         drag_delta_x <= $signed({1'b0, mouse_x}) - $signed({1'b0, last_x});
         drag_delta_y <= $signed({1'b0, mouse_y}) - $signed({1'b0, last_y});
         last_x <= mouse_x;
         last_y <= mouse_y;
       end else begin
         // End drag or not dragging
-        drag_active  <= 0;
+        //drag_active  <= 0;
         drag_delta_x <= 0;
         drag_delta_y <= 0;
       end

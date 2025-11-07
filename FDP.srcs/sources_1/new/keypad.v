@@ -8,43 +8,34 @@ module focus_grid #(
     input wire clk,
     input wire rst,
 
-    // Button navigation
     input wire up_p,
     input wire down_p,
     input wire left_p,
     input wire right_p,
     input wire confirm_p,
 
-    // Mouse input
-    input wire [6:0] mouse_x,    // 0..95 (OLED coords)
-    input wire [5:0] mouse_y,    // 0..63 (OLED coords)
-    input wire       mouse_left, // Left button state
+    input wire [6:0] mouse_x,
+    input wire [5:0] mouse_y,
+    input wire       mouse_left,
 
     output reg [2:0] row,
     output reg [2:0] col,
     output reg       select_pulse
 );
 
-  // Calculate cell dimensions
   localparam integer CELL_W = `DISP_W / COLS;
   localparam integer CELL_H = `DISP_H / ROWS;
-
-  // Border thickness (ignore clicks here)
   localparam integer BORDER = 1;
 
-  // Mouse click edge detection
   reg mouse_left_prev;
   wire mouse_click = mouse_left && !mouse_left_prev;
 
-  // Calculate which cell mouse is over
   wire [2:0] mouse_col = mouse_x / CELL_W;
   wire [2:0] mouse_row = mouse_y / CELL_H;
 
-  // Calculate position within cell
   wire [6:0] cell_x = mouse_x - (mouse_col * CELL_W);
   wire [5:0] cell_y = mouse_y - (mouse_row * CELL_H);
 
-  // Check if mouse is NOT on border (with safety bounds check)
   wire in_valid_col = (mouse_col < COLS);
   wire in_valid_row = (mouse_row < ROWS);
   wire not_on_border = (cell_x >= BORDER) && (cell_x < CELL_W - BORDER) &&
@@ -58,20 +49,14 @@ module focus_grid #(
       select_pulse <= 1'b0;
       mouse_left_prev <= 1'b0;
     end else begin
-      // Update mouse button history
       mouse_left_prev <= mouse_left;
-
-      // Default: button confirm
       select_pulse <= confirm_p;
 
-      // Mouse click takes priority
       if (valid_click) begin
-        // Set focus to clicked cell and trigger
         row <= mouse_row;
         col <= mouse_col;
         select_pulse <= 1'b1;
       end else begin
-        // Normal button navigation (only if no valid click)
         if (up_p && row > 0) row <= row - 1;
         if (down_p && row < ROWS - 1) row <= row + 1;
         if (left_p && col > 0) col <= col - 1;
@@ -84,9 +69,7 @@ endmodule
 module keypad_map #(
     parameter integer GRID_ROWS = 4,
     parameter integer GRID_COLS = 4,
-    parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {
-      "0C=+", "123-", "456*", "789/"
-    }  // row3..row0 (Verilog concatenation is msb..lsb)
+    parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
     input  wire [2:0] row,
     input  wire [2:0] col,
@@ -96,9 +79,8 @@ module keypad_map #(
 );
   localparam integer N = GRID_ROWS * GRID_COLS;
 
-  wire [5:0] idx = row * GRID_COLS + col;  // 0..15
+  wire [5:0] idx = row * GRID_COLS + col;
   always @* begin
-    // slice byte i (LSB-first in this packing scheme)
     ascii     = KB_LAYOUT[8*idx+:8];
     is_equals = (ascii == "=");
     is_clear  = (ascii == "C");
@@ -106,134 +88,87 @@ module keypad_map #(
 endmodule
 
 module key_token_codec (
-    input wire [7:0] key_token,  // from keypad_map (1 byte)
+    input wire [7:0] key_token,
 
-    output reg [8*5-1:0] label_bytes,  // [7:0]=first char to draw, then [15:8]... up to 5 chars
-    output reg [    2:0] label_len,    // 0..5
+    output reg [8*5-1:0] label_bytes,
+    output reg [    2:0] label_len,
 
-    output reg [8*6-1:0] emit_bytes,  // [7:0]=first byte to emit, then [15:8]... up to 6 bytes
-    output reg [    2:0] emit_len,    // 0..6
-
-    output wire is_clear,  // convenience flags
+    output wire is_clear,
     output wire is_equals,
-    output wire is_back  // backspace key
+    output wire is_back
 );
-  // defaults: nothing
   always @* begin
     label_bytes = 40'h00_00_00_00_00;
     label_len   = 3'd0;
-    emit_bytes  = 48'h00_00_00_00_00_00;
-    emit_len    = 3'd0;
 
-    // ASCII printable → pass-through (digits, ops, parens, '.', '%', 'e', etc.)
     if (key_token >= 8'd32 && key_token <= 8'd126) begin
-      label_bytes = {32'h00000000, key_token}; // single-char label
+      label_bytes = {32'h00000000, key_token};
       label_len   = 3'd1;
-      emit_bytes  = {40'h0000000000, key_token}; // single-byte emit
-      emit_len    = 3'd1;
     end
 
-    // Non-ASCII specials override here
     case (key_token)
-      // ===== Page 2 functions: lowercase labels, emit with '(' =====
       `SIN_KEY: begin
-        label_bytes = {16'h0000, "n","i","s"};  // "sin"
+        label_bytes = {16'h0000, "n", "i", "s"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "n","i","s"}; // "sin("
-        emit_len    = 3'd4;
       end
       `COS_KEY: begin
-        label_bytes = {16'h0000, "s","o","c"};  // "cos"
+        label_bytes = {16'h0000, "s", "o", "c"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "s","o","c"}; // "cos("
-        emit_len    = 3'd4;
       end
       `TAN_KEY: begin
-        label_bytes = {16'h0000, "n","a","t"};  // "tan"
+        label_bytes = {16'h0000, "n", "a", "t"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "n","a","t"}; // "tan("
-        emit_len    = 3'd4;
       end
       `LN_KEY: begin
-        label_bytes = {24'h000000,"n","l"}; // "ln"
+        label_bytes = {24'h000000, "n", "l"};
         label_len   = 3'd2;
-        emit_bytes  = {24'h000000, "(", "n","l"}; // "ln("
-        emit_len    = 3'd3;
       end
       `LOG_KEY: begin
-        label_bytes = {16'h0000, "g","o","l"}; // "log"
+        label_bytes = {16'h0000, "g", "o", "l"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "g","o","l"}; // "log("
-        emit_len    = 3'd4;
       end
-
-      // ===== Page 3 functions: display math notation, emit function names =====
       `ABS_KEY: begin
-        label_bytes = {16'h0000, "|","x","|"};  // |x|
+        label_bytes = {16'h0000, "|", "x", "|"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "s","b","a"}; // "abs("
-        emit_len    = 3'd4;
       end
       `FLOOR_KEY: begin
-        label_bytes = {8'h00, `FLOOR_R_KEY, "x", `FLOOR_L_KEY};  // ⌊x⌋
+        label_bytes = {8'h00, `FLOOR_R_KEY, "x", `FLOOR_L_KEY};
         label_len   = 3'd3;
-        emit_bytes  = {"(", "r","o","o","l","f"}; // "floor("
-        emit_len    = 3'd6;
       end
       `CEIL_KEY: begin
-        label_bytes = {8'h00, `CEIL_R_KEY, "x", `CEIL_L_KEY};  // ⌈x⌉
+        label_bytes = {8'h00, `CEIL_R_KEY, "x", `CEIL_L_KEY};
         label_len   = 3'd4;
-        emit_bytes  = {8'h00, "(", "l","i","e","c"}; // "ceil("
-        emit_len    = 3'd5;
       end
       `ROUND_KEY: begin
-        label_bytes = "dnuor";  // "round"
+        label_bytes = "dnuor";
         label_len   = 3'd5;
-        emit_bytes  = {"(", "d","n","u","o","r"}; // "round("
-        emit_len    = 3'd6;
       end
       `MIN_KEY: begin
-        label_bytes = {16'h0000, "n","i","m"};  // "min"
+        label_bytes = {16'h0000, "n", "i", "m"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "n","i","m"}; // "min("
-        emit_len    = 3'd4;
       end
       `MAX_KEY: begin
-        label_bytes = {16'h0000, "x","a","m"};  // "max"
+        label_bytes = {16'h0000, "x", "a", "m"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "x","a","m"}; // "max("
-        emit_len    = 3'd4;
       end
       `POW_KEY: begin
-        label_bytes = {16'h0000, "w","o","p"};  // "pow"
+        label_bytes = {16'h0000, "w", "o", "p"};
         label_len   = 3'd3;
-        emit_bytes  = {16'h0000, "(", "w","o","p"}; // "pow("
-        emit_len    = 3'd4;
       end
-
-      // ===== constants/symbols: draw the glyph, emit token (NOT text) =====
       `PI_KEY: begin
-        label_bytes = {32'h00000000, `PI_KEY}; // single-glyph label
+        label_bytes = {32'h00000000, `PI_KEY};
         label_len   = 3'd1;
-        emit_bytes  = {40'h0000000000, `PI_KEY}; // emit token
-        emit_len    = 3'd1;
       end
       `SQRT_KEY: begin
-        label_bytes = {32'h00000000, `SQRT_KEY}; // single-glyph label
+        label_bytes = {32'h00000000, `SQRT_KEY};
         label_len   = 3'd1;
-        emit_bytes  = {40'h0000000000, `SQRT_KEY}; // emit token (NOT "sqrt(")
-        emit_len    = 3'd1;
       end
-
-      // ===== Special keys =====
       `BACK_KEY: begin
-        label_bytes = {32'h00000000, `BACK_KEY}; // special glyph for backspace
+        label_bytes = {32'h00000000, `BACK_KEY};
         label_len   = 3'd1;
-        emit_bytes  = 48'h000000000000; // no emit (handled separately)
-        emit_len    = 3'd0;
       end
 
-      default: ;  // keep whatever the ASCII default set
+      default: ;
     endcase
   end
 
@@ -246,7 +181,6 @@ module keypad_widget #(
     parameter integer FONT_SCALE = 2,
     parameter integer GRID_ROWS = 4,
     parameter integer GRID_COLS = 4,
-    // One byte per key: ASCII or *_KEY token. Packing matches keypad_map (idx=row*GRID_COLS+col)
     parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
     input wire clk,
@@ -258,25 +192,20 @@ module keypad_widget #(
     input wire right_p,
     input wire confirm_p,
 
-    // Mouse input
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
     input wire       mouse_left,
     input wire       mouse_active,
 
-    // Buffer emit signals (keypad logic)
-    output wire        tb_append,      // 1-cycle strobe: append
-    output wire [ 2:0] tb_append_len,  // 0..6 bytes to append
-    output wire [47:0] tb_append_bus,  // LSB-first
-    output wire        tb_clear,       // 1-cycle strobe: clear buffer
-    output wire        tb_back,        // 1-cycle strobe: backspace
-    output wire        is_equal,       // 1-cycle strobe: equals
+    output wire       tb_append,
+    output wire [7:0] tb_append_byte,
+    output wire       tb_clear,
+    output wire       tb_back,
+    output wire       is_equal,
 
-    // Focus state for renderer
     output wire [2:0] focus_row,
     output wire [2:0] focus_col
 );
-  // -------- Focus --------
   wire select_pulse;
   focus_grid #(
       .ROWS(GRID_ROWS),
@@ -297,7 +226,6 @@ module keypad_widget #(
       .select_pulse(select_pulse)
   );
 
-  // -------- Map focused cell → token --------
   wire [7:0] token;
   wire unused_eq, unused_clr;
   keypad_map #(
@@ -312,28 +240,21 @@ module keypad_widget #(
       .is_clear(unused_clr)
   );
 
-  // -------- Token → {label, emit} --------
   wire [39:0] label_bytes;
   wire [ 2:0] label_len;
-  wire [47:0] emit_bytes;
-  wire [ 2:0] emit_len;
   wire k_is_eq, k_is_clr, k_is_back;
 
   key_token_codec u_codec (
       .key_token(token),
       .label_bytes(label_bytes),
       .label_len(label_len),
-      .emit_bytes(emit_bytes),
-      .emit_len(emit_len),
       .is_clear(k_is_clr),
       .is_equals(k_is_eq),
       .is_back(k_is_back)
   );
 
-  // -------- Emit-to-buffer signals (append/clear/equals) --------
-  assign tb_append = select_pulse && (!k_is_eq) && (!k_is_clr) && (!k_is_back) && (emit_len != 0);
-  assign tb_append_len = emit_len;
-  assign tb_append_bus = emit_bytes;
+  assign tb_append = select_pulse && (!k_is_eq) && (!k_is_clr) && (!k_is_back);
+  assign tb_append_byte = token;
   assign tb_clear = select_pulse && k_is_clr;
   assign tb_back = select_pulse && k_is_back;
   assign is_equal = select_pulse && k_is_eq;
@@ -346,34 +267,28 @@ module keypad_renderer #(
     parameter integer GRID_COLS = 4,
     parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
-    input wire [12:0] pixel_index,  // Input: which pixel to render
-    input wire [ 2:0] focus_row,    // from input_core
-    input wire [ 2:0] focus_col,    // from input_core
+    input wire [12:0] pixel_index,
+    input wire [ 2:0] focus_row,
+    input wire [ 2:0] focus_col,
 
-    // Mouse cursor position and state
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
-    input wire       mouse_left,   // For click state
+    input wire       mouse_left,
     input wire       mouse_active,
 
-    output reg [15:0] pixel_color  // Output: color for this pixel
+    output reg [15:0] pixel_color
 );
-  // ---- Derived geometry ----
   localparam integer CELL_W = `DISP_W / GRID_COLS;
   localparam integer CELL_H = `DISP_H / GRID_ROWS;
-  // ---- x,y from pixel_index ----
   wire [6:0] x = pixel_index % `DISP_W;
   wire [6:0] y = pixel_index / `DISP_W;
-  // ---- Which cell am I in? ----
-  wire [2:0] cx = x / CELL_W;  // 0..GRID_COLS-1
-  wire [2:0] cy = y / CELL_H;  // 0..GRID_ROWS-1
+  wire [2:0] cx = x / CELL_W;
+  wire [2:0] cy = y / CELL_H;
   wire [6:0] ox = cx * CELL_W;
   wire [6:0] oy = cy * CELL_H;
-  // ---- Base layers ----
   wire in_cell = (x >= ox) && (y >= oy) && (x < ox + CELL_W) && (y < oy + CELL_H);
   wire border_on = in_cell && ( y==oy || y==(oy+CELL_H-1) || x==ox || x==(ox+CELL_W-1) );
   wire is_focus = (cx == focus_col) && (cy == focus_row);
-  // ---- Get per-cell token (ASCII or *_KEY) from layout ----
   wire [7:0] cell_token;
   keypad_map #(
       .GRID_ROWS(GRID_ROWS),
@@ -386,29 +301,24 @@ module keypad_renderer #(
       .is_equals(),
       .is_clear()
   );
-  // ---- Token -> label (up to 5 chars), no need for emit here ----
-  wire [39:0] label_bytes;  // [7:0]=char0 (left), [15:8]=char1, ..., [39:32]=char4
-  wire [ 2:0] label_len;  // 0..5
+  wire [39:0] label_bytes;
+  wire [ 2:0] label_len;
   key_token_codec CODEC (
       .key_token(cell_token),
       .label_bytes(label_bytes),
       .label_len(label_len),
-      .emit_bytes(),
-      .emit_len(),
       .is_clear(),
       .is_equals(),
       .is_back()
   );
-  // ---- Glyph group placement (5x7 scaled) ----
-  localparam [6:0] GW = 5 * FONT_SCALE;  // glyph width
-  localparam [6:0] GH = 7 * FONT_SCALE;  // glyph height
-  localparam [6:0] GAP = FONT_SCALE;  // spacing between glyphs
+  localparam [6:0] GW = 5 * FONT_SCALE;
+  localparam [6:0] GH = 7 * FONT_SCALE;
+  localparam [6:0] GAP = FONT_SCALE;
   wire [9:0] group_w_chars = label_len * GW;
   wire [9:0] group_w_gaps = (label_len == 0) ? 10'd0 : (label_len - 1) * GAP;
   wire [9:0] group_w_total = group_w_chars + group_w_gaps;
-  wire [6:0] gx0 = ox + (CELL_W - group_w_total[6:0]) / 2;  // leftmost glyph x
+  wire [6:0] gx0 = ox + (CELL_W - group_w_total[6:0]) / 2;
   wire [6:0] gy = oy + (CELL_H - GH) / 2;
-  // ---- Up to 5 glyphs side-by-side ----
   wire [7:0] ch0 = label_bytes[7:0];
   wire [7:0] ch1 = label_bytes[15:8];
   wire [7:0] ch2 = label_bytes[23:16];
@@ -422,7 +332,7 @@ module keypad_renderer #(
       .y    (y),
       .gx   (gx0),
       .gy   (gy),
-      .ascii(ch0),       // pass full 8-bit (supports PI/SQRT/bracket tokens)
+      .ascii(ch0),
       .on   (glyph0_on)
   );
   glyph_blitter #(
@@ -465,14 +375,12 @@ module keypad_renderer #(
       .ascii(ch4),
       .on(glyph4_on)
   );
-  // Only enable glyphs 0..label_len-1
   wire gl_on = ((label_len > 0) && glyph0_on) |
                ((label_len > 1) && glyph1_on) |
                ((label_len > 2) && glyph2_on) |
                ((label_len > 3) && glyph3_on) |
                ((label_len > 4) && glyph4_on);
 
-  // Cursor display (arrow/hand based on click state)
   wire cursor_active;
   wire [15:0] cursor_colour;
   cursor_display cursor (
@@ -486,14 +394,13 @@ module keypad_renderer #(
       .cursor_active(cursor_active)
   );
 
-  // ---- Compose ----
   always @* begin
     pixel_color = `C_BG;
     if (in_cell) pixel_color = `C_BTN;
     if (is_focus && in_cell) pixel_color = `C_FOCUS;
     if (border_on) pixel_color = `C_BORDER;
-    if (gl_on) pixel_color = `C_TEXT;  // text on top
-    if (cursor_active) pixel_color = cursor_colour & mouse_active;  // Cursor on top of everything
+    if (gl_on) pixel_color = `C_TEXT;
+    if (cursor_active) pixel_color = cursor_colour & mouse_active;
   end
 
 endmodule
