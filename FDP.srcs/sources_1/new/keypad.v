@@ -249,10 +249,9 @@ module keypad_widget #(
     // One byte per key: ASCII or *_KEY token. Packing matches keypad_map (idx=row*GRID_COLS+col)
     parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
-    input wire clk,  // system clock (logic)
+    input wire clk,
     input wire rst,
 
-    // navigation pulses (already debounced/repeated)
     input wire up_p,
     input wire down_p,
     input wire left_p,
@@ -265,19 +264,15 @@ module keypad_widget #(
     input wire       mouse_left,
     input wire       mouse_active,
 
-    // pixel render side
-    input  wire       clk_pix,  // pixel clock for your OLED pipeline
-    output wire [7:0] oled_out,
+    // Buffer emit signals (keypad logic)
+    output wire        tb_append,      // 1-cycle strobe: append
+    output wire [ 2:0] tb_append_len,  // 0..6 bytes to append
+    output wire [47:0] tb_append_bus,  // LSB-first
+    output wire        tb_clear,       // 1-cycle strobe: clear buffer
+    output wire        tb_back,        // 1-cycle strobe: backspace
+    output wire        is_equal,       // 1-cycle strobe: equals
 
-    // emit-to-buffer interface (append path)
-    output wire        tb_append,      // pulse: append emit_bytes
-    output wire [ 2:0] tb_append_len,  // 0..6
-    output wire [47:0] tb_append_bus,  // bytes LSB-first (6 bytes)
-    output wire        tb_clear,       // pulse when 'C' pressed
-    output wire        tb_back,        // pulse when backspace pressed
-    output wire        is_equal,       // pulse when '=' pressed
-
-    // (optional) expose focus for other UI uses
+    // Focus state for renderer
     output wire [2:0] focus_row,
     output wire [2:0] focus_col
 );
@@ -343,25 +338,6 @@ module keypad_widget #(
   assign tb_back = select_pulse && k_is_back;
   assign is_equal = select_pulse && k_is_eq;
 
-  // -------- Per-pixel render (uses label mapping for every cell) --------
-  // We reuse your renderer that internally calls keypad_map and key_token_codec per cell.
-  // It needs only focus for highlight and KB_LAYOUT for tokens.
-  keypad_renderer #(
-      .FONT_SCALE(FONT_SCALE),
-      .GRID_ROWS (GRID_ROWS),
-      .GRID_COLS (GRID_COLS),
-      .KB_LAYOUT (KB_LAYOUT)
-  ) u_rend (
-      .clk_pix     (clk_pix),
-      .rst         (rst),
-      .focus_row   (focus_row),
-      .focus_col   (focus_col),
-      .mouse_x     (mouse_x),
-      .mouse_y     (mouse_y),
-      .mouse_left  (mouse_left),
-      .mouse_active(mouse_active),
-      .oled_out    (oled_out)
-  );
 endmodule
 
 module keypad_renderer #(
@@ -370,10 +346,9 @@ module keypad_renderer #(
     parameter integer GRID_COLS = 4,
     parameter [8*GRID_ROWS*GRID_COLS-1:0] KB_LAYOUT = {"0C=+", "123-", "456*", "789/"}
 ) (
-    input wire       clk_pix,    // 6.25 MHz OLED pixel clock
-    input wire       rst,        // active-high reset
-    input wire [2:0] focus_row,  // from input_core
-    input wire [2:0] focus_col,  // from input_core
+    input wire [12:0] pixel_index,  // Input: which pixel to render
+    input wire [ 2:0] focus_row,    // from input_core
+    input wire [ 2:0] focus_col,    // from input_core
 
     // Mouse cursor position and state
     input wire [6:0] mouse_x,
@@ -381,14 +356,12 @@ module keypad_renderer #(
     input wire       mouse_left,   // For click state
     input wire       mouse_active,
 
-    output wire [7:0] oled_out  // hook to JB[7:0] (or JA/JC)
+    output reg [15:0] pixel_color  // Output: color for this pixel
 );
   // ---- Derived geometry ----
   localparam integer CELL_W = `DISP_W / GRID_COLS;
   localparam integer CELL_H = `DISP_H / GRID_ROWS;
   // ---- x,y from pixel_index ----
-  wire [12:0] pixel_index;
-  wire [15:0] pixel_color;
   wire [6:0] x = pixel_index % `DISP_W;
   wire [6:0] y = pixel_index / `DISP_W;
   // ---- Which cell am I in? ----
@@ -503,7 +476,7 @@ module keypad_renderer #(
   wire cursor_active;
   wire [15:0] cursor_colour;
   cursor_display cursor (
-      .clk(clk_pix),
+      .clk(1'b0),
       .pixel_index(pixel_index),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
@@ -514,20 +487,13 @@ module keypad_renderer #(
   );
 
   // ---- Compose ----
-  reg [15:0] px;
   always @* begin
-    px = `C_BG;
-    if (in_cell) px = `C_BTN;
-    if (is_focus && in_cell) px = `C_FOCUS;
-    if (border_on) px = `C_BORDER;
-    if (gl_on) px = `C_TEXT;  // text on top
-    if (cursor_active) px = cursor_colour & mouse_active;  // Cursor on top of everything
+    pixel_color = `C_BG;
+    if (in_cell) pixel_color = `C_BTN;
+    if (is_focus && in_cell) pixel_color = `C_FOCUS;
+    if (border_on) pixel_color = `C_BORDER;
+    if (gl_on) pixel_color = `C_TEXT;  // text on top
+    if (cursor_active) pixel_color = cursor_colour & mouse_active;  // Cursor on top of everything
   end
-  oled u_oled (
-      .clk_6p25m  (clk_pix),
-      .rst        (rst),
-      .pixel_color(px),
-      .oled_out   (oled_out),
-      .pixel_index(pixel_index)
-  );
+
 endmodule

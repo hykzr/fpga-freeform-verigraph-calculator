@@ -52,6 +52,34 @@ module text_buffer #(
   end
 endmodule
 
+module scroll_page_ctrl (
+    input wire clk,
+    input wire rst,
+    input wire [3:0] mouse_z,
+    input wire [1:0] num_pages,  // 0=1 page, 1=2 pages, 2=3 pages
+    output reg [1:0] page_sel
+);
+  reg [3:0] last_z;
+  wire signed [3:0] z_signed = $signed(mouse_z);
+  wire signed [3:0] last_z_signed = $signed(last_z);
+  wire z_scroll_up = (z_signed > 4'sd0) && (last_z_signed == 4'sd0);
+  wire z_scroll_down = (z_signed < 4'sd0) && (last_z_signed == 4'sd0);
+
+  always @(posedge clk) begin
+    if (rst) begin
+      page_sel <= 2'd0;
+      last_z   <= 4'd0;
+    end else begin
+      last_z <= mouse_z;
+      if (z_scroll_up && (page_sel < num_pages)) begin
+        page_sel <= page_sel + 2'd1;
+      end else if (z_scroll_down && (page_sel > 0)) begin
+        page_sel <= page_sel - 2'd1;
+      end
+    end
+  end
+endmodule
+
 module input_core #(
     parameter integer CLK_HZ = 100_000_000,
     parameter integer DEBOUNCE_MS = 20,
@@ -61,7 +89,8 @@ module input_core #(
     parameter integer FONT_SCALE = 2,
     parameter [8*16-1:0] KB0_LAYOUT = 0,  // 4x4 layout
     parameter [8*16-1:0] KB1_LAYOUT = 0,  // 4x4 layout
-    parameter [8*12-1:0] KB2_LAYOUT = 0  // 4x3 layout
+    parameter [8*12-1:0] KB2_LAYOUT = 0,  // 4x3 layout
+    parameter OLED_ROTATE_180 = 0  // 0=normal, 1=rotate 180 degrees
 ) (
     input wire clk,
     input wire rst,
@@ -71,11 +100,11 @@ module input_core #(
     left_p,
     right_p,
     confirm_p,
-    input wire [1:0] kb_sel,  // Changed to 2 bits for 3 pages
 
     // Mouse input
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
+    input wire [3:0] mouse_z,
     input wire       mouse_left,
     input wire       mouse_active,
 
@@ -95,9 +124,19 @@ module input_core #(
     input  wire       clk_pix,
     output wire [7:0] oled_out
 );
-  wire [7:0] oled_out_0;
-  wire [7:0] oled_out_1;
-  wire [7:0] oled_out_2;
+  // Scroll-based page selection
+  wire [1:0] kb_sel;
+  scroll_page_ctrl scroll_ctrl (
+      .clk(clk),
+      .rst(rst),
+      .mouse_z(mouse_z),
+      .num_pages(2'd2),  // 3 pages total
+      .page_sel(kb_sel)
+  );
+
+  wire [2:0] focus_row_0, focus_col_0;
+  wire [2:0] focus_row_1, focus_col_1;
+  wire [2:0] focus_row_2, focus_col_2;
 
   wire ap0, ap1, ap2;  // append pulse
   wire [2:0] al0, al1, al2;  // append len
@@ -124,16 +163,14 @@ module input_core #(
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
       .mouse_active(mouse_active),
-      .clk_pix(clk_pix),
-      .oled_out(oled_out_0),
       .tb_append(ap0),
       .tb_append_len(al0),
       .tb_append_bus(ab0),
       .tb_clear(cl0),
       .tb_back(bk0),
       .is_equal(eq0),
-      .focus_row(),
-      .focus_col()
+      .focus_row(focus_row_0),
+      .focus_col(focus_col_0)
   );
 
   // Page 1: 4x4 trig and advanced functions
@@ -154,16 +191,14 @@ module input_core #(
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
       .mouse_active(mouse_active),
-      .clk_pix(clk_pix),
-      .oled_out(oled_out_1),
       .tb_append(ap1),
       .tb_append_len(al1),
       .tb_append_bus(ab1),
       .tb_clear(cl1),
       .tb_back(bk1),
       .is_equal(eq1),
-      .focus_row(),
-      .focus_col()
+      .focus_row(focus_row_1),
+      .focus_col(focus_col_1)
   );
 
   // Page 2: 4x3 math.h-style functions
@@ -184,16 +219,14 @@ module input_core #(
       .mouse_y(mouse_y),
       .mouse_left(mouse_left),
       .mouse_active(mouse_active),
-      .clk_pix(clk_pix),
-      .oled_out(oled_out_2),
       .tb_append(ap2),
       .tb_append_len(al2),
       .tb_append_bus(ab2),
       .tb_clear(cl2),
       .tb_back(bk2),
       .is_equal(eq2),
-      .focus_row(),
-      .focus_col()
+      .focus_row(focus_row_2),
+      .focus_col(focus_col_2)
   );
 
   // Mux outputs based on kb_sel
@@ -204,7 +237,89 @@ module input_core #(
   wire        tb_back_i = (kb_sel == 2'd0) ? bk0 : (kb_sel == 2'd1) ? bk1 : bk2;
   assign is_equal = (kb_sel == 2'd0) ? eq0 : (kb_sel == 2'd1) ? eq1 : eq2;
   assign is_clear = tb_clear_i;
-  assign oled_out = (kb_sel == 2'd0) ? oled_out_0 : (kb_sel == 2'd1) ? oled_out_1 : oled_out_2;
+
+  wire [2:0] focus_row = (kb_sel == 2'd0) ? focus_row_0 : (kb_sel == 2'd1) ? focus_row_1 : focus_row_2;
+  wire [2:0] focus_col = (kb_sel == 2'd0) ? focus_col_0 : (kb_sel == 2'd1) ? focus_col_1 : focus_col_2;
+
+  // Single OLED module with pixel routing
+  wire [12:0] pixel_index;
+  wire [12:0] actual_pixel_index;
+
+  // OLED rotation: reverse pixel index if enabled
+  generate
+    if (OLED_ROTATE_180) begin : gen_rotate
+      assign actual_pixel_index = (`DISP_W * `DISP_H - 1) - pixel_index;
+    end else begin : gen_no_rotate
+      assign actual_pixel_index = pixel_index;
+    end
+  endgenerate
+
+  // Renderer outputs
+  wire [15:0] pixel_color_0;
+  wire [15:0] pixel_color_1;
+  wire [15:0] pixel_color_2;
+
+  keypad_renderer #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (4),
+      .KB_LAYOUT (KB0_LAYOUT)
+  ) rend0 (
+      .pixel_index(actual_pixel_index),
+      .focus_row(focus_row_0),
+      .focus_col(focus_col_0),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
+      .pixel_color(pixel_color_0)
+  );
+
+  keypad_renderer #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (4),
+      .KB_LAYOUT (KB1_LAYOUT)
+  ) rend1 (
+      .pixel_index(actual_pixel_index),
+      .focus_row(focus_row_1),
+      .focus_col(focus_col_1),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
+      .pixel_color(pixel_color_1)
+  );
+
+  keypad_renderer #(
+      .FONT_SCALE(FONT_SCALE),
+      .GRID_ROWS (4),
+      .GRID_COLS (3),
+      .KB_LAYOUT (KB2_LAYOUT)
+  ) rend2 (
+      .pixel_index(actual_pixel_index),
+      .focus_row(focus_row_2),
+      .focus_col(focus_col_2),
+      .mouse_x(mouse_x),
+      .mouse_y(mouse_y),
+      .mouse_left(mouse_left),
+      .mouse_active(mouse_active),
+      .pixel_color(pixel_color_2)
+  );
+
+  // Mux pixel colors
+  wire [15:0] pixel_color = (kb_sel == 2'd0) ? pixel_color_0 : 
+                            (kb_sel == 2'd1) ? pixel_color_1 : 
+                            pixel_color_2;
+
+  // Single OLED driver
+  oled u_oled (
+      .clk_6p25m  (clk_pix),
+      .rst        (rst),
+      .pixel_color(pixel_color),
+      .oled_out   (oled_out),
+      .pixel_index(pixel_index)
+  );
 
   text_buffer #(
       .MAX_DATA(MAX_DATA)
@@ -226,9 +341,10 @@ module input_core #(
 endmodule
 
 module student_input #(
-    parameter integer CLK_HZ     = 100_000_000,
-    parameter integer MAX_DATA   = 32,
-    parameter integer FONT_SCALE = 2
+    parameter integer CLK_HZ          = 100_000_000,
+    parameter integer MAX_DATA        = 32,
+    parameter integer FONT_SCALE      = 2,
+    parameter         OLED_ROTATE_180 = 0
 ) (
     input wire clk,
     input wire rst,
@@ -237,11 +353,11 @@ module student_input #(
     left_p,
     right_p,
     confirm_p,
-    input wire [1:0] kb_sel,
 
     // Mouse input
     input wire [6:0] mouse_x,
     input wire [5:0] mouse_y,
+    input wire [3:0] mouse_z,
     input wire       mouse_left,
     input wire       mouse_active,
 
@@ -261,7 +377,7 @@ module student_input #(
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
 
   localparam [8*16-1:0] KB1_LAYOUT = {
-    `TAN_KEY, `COS_KEY, `SIN_KEY, `BACK_KEY, "%><", `PI_KEY, "^&|~", ".)(x"
+    `TAN_KEY, `COS_KEY, `SIN_KEY, `BACK_KEY, "><x", `PI_KEY, "^&|~", ".)(,"
   };
 
   localparam [8*12-1:0] KB2_LAYOUT = {
@@ -287,6 +403,7 @@ module student_input #(
   wire [8*MAX_DATA-1:0] load_bus;
   wire [           7:0] debug_state;
   wire [           7:0] debug_req_count;
+  wire [           1:0] kb_sel;
 
   input_core #(
       .CLK_HZ(CLK_HZ),
@@ -294,7 +411,8 @@ module student_input #(
       .FONT_SCALE(1),
       .KB0_LAYOUT(KB0_LAYOUT),
       .KB1_LAYOUT(KB1_LAYOUT),
-      .KB2_LAYOUT(KB2_LAYOUT)
+      .KB2_LAYOUT(KB2_LAYOUT),
+      .OLED_ROTATE_180(OLED_ROTATE_180)
   ) core (
       .clk(clk),
       .rst(rst),
@@ -303,9 +421,9 @@ module student_input #(
       .left_p(left_p),
       .right_p(right_p),
       .confirm_p(confirm_p),
-      .kb_sel(kb_sel),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
+      .mouse_z(mouse_z),
       .mouse_left(mouse_left),
       .mouse_active(mouse_active),
       .buf_load(load_buf),

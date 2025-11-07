@@ -18,11 +18,12 @@ module Top_Student (
     inout wire PS2Data
 );
   localparam MAX_DATA = 32;
+  // Set to 1 if OLED is mounted upside down
+  localparam OLED_ROTATE_180 = 1;
 
   wire rst = sw[15];
   wire mode_zoom = sw[14];
   wire button_for_graph = sw[13];
-  wire [1:0] kb_select = sw[1:0];
 
   wire clk_25M, clk_6p25M, clk_1k;
   clock_divider clkgen (
@@ -94,12 +95,12 @@ module Top_Student (
   wire        [15:0] debug_led_input;
 
   student_input #(
-      .CLK_HZ  (100_000_000),
-      .MAX_DATA(MAX_DATA)
+      .CLK_HZ(100_000_000),
+      .MAX_DATA(MAX_DATA),
+      .OLED_ROTATE_180(OLED_ROTATE_180)
   ) U_INPUT (
       .clk(clk),
       .rst(rst),
-      .kb_sel(kb_select),
       .up_p(~button_for_graph & btn_up_p),
       .down_p(~button_for_graph & btn_down_p),
       .left_p(~button_for_graph & btn_left_p),
@@ -107,6 +108,7 @@ module Top_Student (
       .confirm_p(~button_for_graph & btn_confirm_p),
       .mouse_x(mouse_x),
       .mouse_y(mouse_y),
+      .mouse_z(mouse_z),
       .mouse_left(mouse_left & mouse_for_keypad),
       .mouse_active(mouse_for_keypad),
       .graph_start(graph_start),
