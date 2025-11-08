@@ -777,6 +777,18 @@ module font5x7_rom (
           default: bits = 5'b00000;
         endcase
       end
+      `XOR_KEY: begin
+        case (row)
+          3'd0: bits = 5'b00000;
+          3'd1: bits = 5'b01110;
+          3'd2: bits = 5'b10101;
+          3'd3: bits = 5'b11111;
+          3'd4: bits = 5'b10101;
+          3'd5: bits = 5'b01110;
+          3'd6: bits = 5'b00000;
+          default: bits = 5'b00000;
+        endcase
+      end
       "%": begin
         case (row)
           3'd0: bits = 5'b11001;

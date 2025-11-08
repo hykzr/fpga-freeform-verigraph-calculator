@@ -98,13 +98,8 @@ module key_token_codec (
     output wire is_back
 );
   always @* begin
-    label_bytes = 40'h00_00_00_00_00;
-    label_len   = 3'd0;
-
-    if (key_token >= 8'd32 && key_token <= 8'd126) begin
-      label_bytes = {32'h00000000, key_token};
-      label_len   = 3'd1;
-    end
+    label_bytes = {32'h00000000, key_token};
+    label_len   = 3'd1;
 
     case (key_token)
       `SIN_KEY: begin
@@ -155,19 +150,6 @@ module key_token_codec (
         label_bytes = {16'h0000, "w", "o", "p"};
         label_len   = 3'd3;
       end
-      `PI_KEY: begin
-        label_bytes = {32'h00000000, `PI_KEY};
-        label_len   = 3'd1;
-      end
-      `SQRT_KEY: begin
-        label_bytes = {32'h00000000, `SQRT_KEY};
-        label_len   = 3'd1;
-      end
-      `BACK_KEY: begin
-        label_bytes = {32'h00000000, `BACK_KEY};
-        label_len   = 3'd1;
-      end
-
       default: ;
     endcase
   end

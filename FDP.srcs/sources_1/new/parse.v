@@ -31,7 +31,7 @@ module tokenizer #(
     wire signed [31:0] np_q;
     wire [7:0] np_end;
     wire [7:0] np_err;
-    wire np_done;
+    wire       np_done;
 
     str_to_q16_16 #(.MAX_LEN(MAX_LEN), .MAX_FRAC_DIG(6)) NUM (
         .clk(clk), .rst(rst), .start(np_start),
@@ -39,137 +39,138 @@ module tokenizer #(
         .q_out(np_q), .end_idx(np_end), .err_flags(np_err), .done(np_done)
     );
 
-    localparam [2:0] S_IDLE=3'd0,S_SCAN=3'd1,S_NUM=3'd2,S_EMIT=3'd3;
+    localparam [2:0] S_IDLE=3'd0, S_SCAN=3'd1, S_NUM=3'd2, S_EMIT=3'd3, S_TAIL=3'd4, S_END=3'd5;
     reg [2:0] s, s_n;
 
-    reg [7:0] i, i_n;
-    reg       prev_value, prev_value_n;
+    reg [7:0]  i, i_n;
+    reg        prev_value, prev_value_n;
     reg [32:0] tok_buf, tok_buf_n;
 
-    wire [7:0] ch  = (i < expr_len) ? expr_in[8*i +: 8] : 8'd0;
-    wire [7:0] ch1 = ((i+1) < expr_len) ? expr_in[8*(i+1) +: 8] : 8'd0;
-    wire [7:0] ch2 = ((i+2) < expr_len) ? expr_in[8*(i+2) +: 8] : 8'd0;
-    wire [7:0] ch3 = ((i+3) < expr_len) ? expr_in[8*(i+3) +: 8] : 8'd0;
-    wire [7:0] ch4 = ((i+4) < expr_len) ? expr_in[8*(i+4) +: 8] : 8'd0;
+    reg [7:0] paren_balance, paren_balance_n; // count '(' minus ')'
+    reg [7:0] tail_cnt, tail_cnt_n;           // how many ')' to flush at end
+
+    wire [7:0] ch = (i < expr_len) ? expr_in[8*i +: 8] : 8'd0;
 
     wire is_digit = (ch >= "0" && ch <= "9");
     wire is_dot   = (ch == ".");
     wire is_x     = (ch == "x");
 
-    function [31:0] pack_op; input [3:0] id; pack_op = {`TK_KIND_OP,id,24'd0}; endfunction
-    localparam [31:0] pack_lp = {`TK_KIND_LPAREN,4'd0,24'd0};
-    localparam [31:0] pack_rp = {`TK_KIND_RPAREN,4'd0,24'd0};
-    function [31:0] pack_fn; input [3:0] id; pack_fn = {`TK_KIND_FUNC,id,24'd0}; endfunction
-    localparam [31:0] pack_end = {`TK_KIND_END,4'd0,24'd0};
+    function [31:0] pack_op; input [3:0] id; begin pack_op = {`TK_KIND_OP,id,24'd0}; end endfunction
+    localparam [31:0] pack_lp    = {`TK_KIND_LPAREN ,4'd0,24'd0};
+    localparam [31:0] pack_rp    = {`TK_KIND_RPAREN,4'd0,24'd0};
+    localparam [31:0] pack_comma = {`TK_KIND_COMMA ,4'd0,24'd0};
+    function [31:0] pack_fn; input [3:0] id; begin pack_fn = {`TK_KIND_FUNC,id,24'd0}; end endfunction
+    localparam [31:0] pack_end   = {`TK_KIND_END   ,4'd0,24'd0};
 
-    // Function identifiers (text)
-    wire is_sin   = (ch=="s" && ch1=="i" && ch2=="n");
-    wire is_cos   = (ch=="c" && ch1=="o" && ch2=="s");
-    wire is_tan   = (ch=="t" && ch1=="a" && ch2=="n");
-    wire is_abs   = (ch=="a" && ch1=="b" && ch2=="s");
-    wire is_ceil  = (ch=="c" && ch1=="e" && ch2=="i" && ch3=="l");
-    wire is_floor = (ch=="f" && ch1=="l" && ch2=="o" && ch3=="o" && ch4=="r");
-    wire is_round = (ch=="r" && ch1=="o" && ch2=="u" && ch3=="n" && ch4=="d");
-    wire is_max   = (ch=="m" && ch1=="a" && ch2=="x");
-    wire is_min   = (ch=="m" && ch1=="i" && ch2=="n");
-    wire is_pow   = (ch=="p" && ch1=="o" && ch2=="w");
-    wire is_ln    = (ch=="l" && ch1=="n");
-    wire is_log   = (ch=="l" && ch1=="o" && ch2=="g");
+    wire is_sin_key    = (ch == `SIN_KEY);
+    wire is_cos_key    = (ch == `COS_KEY);
+    wire is_tan_key    = (ch == `TAN_KEY);
+    wire is_sqrt_key   = (ch == `SQRT_KEY);
+    wire is_ln_key     = (ch == `LN_KEY);
+    wire is_log_key    = (ch == `LOG_KEY);
+    wire is_abs_key    = (ch == `ABS_KEY);
+    wire is_floor_key  = (ch == `FLOOR_KEY);
+    wire is_ceil_key   = (ch == `CEIL_KEY);
+    wire is_round_key  = (ch == `ROUND_KEY);
+    wire is_not_ascii  = (ch == "~"); // keep as unary function
 
-    // Special keys
-    wire is_sin_key  = (ch == `SIN_KEY);
-    wire is_cos_key  = (ch == `COS_KEY);
-    wire is_tan_key  = (ch == `TAN_KEY);
-    wire is_sqrt_key = (ch == `SQRT_KEY);
-    wire is_ln_key   = (ch == `LN_KEY);
-    wire is_log_key  = (ch == `LOG_KEY);
-    wire is_abs_key  = (ch == `ABS_KEY);
-    wire is_floor_key = (ch == `FLOOR_KEY);
-    wire is_ceil_key = (ch == `CEIL_KEY);
-    wire is_round_key = (ch == `ROUND_KEY);
-    wire is_min_key  = (ch == `MIN_KEY);
-    wire is_max_key  = (ch == `MAX_KEY);
-    wire is_pow_key  = (ch == `POW_KEY);
+    // binary/variadic functions that still require () + commas
+    wire is_min_key    = (ch == `MIN_KEY);
+    wire is_max_key    = (ch == `MAX_KEY);
 
-    // Constants
-    wire is_pi = (ch == `PI_KEY);
-    wire is_e  = (ch == "e");
+    // operators / constants
+    wire is_pow_char   = (ch == "^");          // '^' is POWER operator now
+    wire is_pow_key    = (ch == `POW_KEY);     // optional: accept special power key too
+    wire is_xor_key    = (ch == `XOR_KEY);     // XOR no longer '^'
+    wire is_pi_key     = (ch == `PI_KEY);
+    wire is_e_ascii    = (ch == "e");
+
+    function [3:0] fn_id_from_key;
+        input [7:0] key;
+    begin
+        case (key)
+            `SIN_KEY:   fn_id_from_key = `FN_SIN;
+            `COS_KEY:   fn_id_from_key = `FN_COS;
+            `TAN_KEY:   fn_id_from_key = `FN_TAN;
+            `SQRT_KEY:  fn_id_from_key = `FN_SQRT;
+            `ABS_KEY:   fn_id_from_key = `FN_ABS;
+            `FLOOR_KEY: fn_id_from_key = `FN_FLOOR;
+            `CEIL_KEY:  fn_id_from_key = `FN_CEIL;
+            `ROUND_KEY: fn_id_from_key = `FN_ROUND;
+            `LN_KEY:    fn_id_from_key = `FN_LN;
+            `LOG_KEY:   fn_id_from_key = `FN_LOG;
+            default:    fn_id_from_key = `FN_NOT; // '~'
+        endcase
+    end endfunction
 
     always @* begin
         s_n = s; i_n = i; prev_value_n = prev_value;
         out_valid=1'b0; out_tok=33'd0; done=1'b0; err_flags=8'd0;
         tok_buf_n=tok_buf; np_start=1'b0; np_base=i;
+        paren_balance_n = paren_balance; tail_cnt_n = tail_cnt;
 
         case (s)
             S_IDLE: begin
-                if (start) begin s_n=S_SCAN; i_n=8'd0; prev_value_n=1'b0; end
+                if (start) begin
+                    s_n=S_SCAN; i_n=8'd0; prev_value_n=1'b0;
+                    paren_balance_n=8'd0; tail_cnt_n=8'd0;
+                end
             end
             S_SCAN: begin
                 if (i >= expr_len) begin
-                    tok_buf_n = {1'b0, pack_end};
-                    s_n = S_EMIT;
+                    // end → flush missing ')' then END
+                    if (paren_balance != 0) begin
+                        tail_cnt_n = paren_balance;
+                        s_n = S_TAIL;
+                    end else begin
+                        s_n = S_END;
+                    end
+
                 end else if (is_digit || is_dot) begin
                     np_start = 1'b1; np_base = i; s_n = S_NUM;
                 end else if (is_x) begin
-                    tok_buf_n = {1'b1, x_value};
-                    i_n = i + 8'd1; s_n = S_EMIT;
-                end else if (is_pi) begin
-                    tok_buf_n = {1'b1, `Q16_PI};
-                    i_n = i + 8'd1; s_n = S_EMIT;
-                end else if (is_e) begin
-                    tok_buf_n = {1'b1, `Q16_E};
-                    i_n = i + 8'd1; s_n = S_EMIT;
+                    tok_buf_n = {1'b1, x_value}; i_n = i+1; s_n=S_EMIT;
+                end else if (is_pi_key) begin
+                    tok_buf_n = {1'b1, `Q16_PI}; i_n = i+1; s_n=S_EMIT;
+                end else if (is_e_ascii) begin
+                    tok_buf_n = {1'b1, `Q16_E}; i_n = i+1; s_n=S_EMIT;
                 end else if (ch=="(") begin
-                    tok_buf_n = {1'b0, pack_lp}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_lp}; i_n=i+1; s_n=S_EMIT;
+                    paren_balance_n = paren_balance + 1;
                 end else if (ch==")") begin
-                    tok_buf_n = {1'b0, pack_rp}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_rp}; i_n=i+1; s_n=S_EMIT;
+                    paren_balance_n = (paren_balance!=0) ? (paren_balance - 1) : 8'd0;
+                end else if (ch==",") begin
+                    tok_buf_n = {1'b0, pack_comma}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="+") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_ADD)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_ADD)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="-") begin
-                    tok_buf_n = {1'b0, pack_op(prev_value ? `OP_SUB : `OP_UN_NEG)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(prev_value ? `OP_SUB : `OP_UN_NEG)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="*") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_MUL)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_MUL)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="/") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_DIV)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_DIV)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="%") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_REM)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_REM)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="&") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_AND)}; i_n=i+8'd1; s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_AND)}; i_n=i+1; s_n=S_EMIT;
                 end else if (ch=="|") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_OR)}; i_n=i+8'd1; s_n=S_EMIT;
-                end else if (ch=="^") begin
-                    tok_buf_n = {1'b0, pack_op(`OP_XOR)}; i_n=i+8'd1; s_n=S_EMIT;
-                end else if (ch=="~") begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_NOT)}; i_n=i+8'd1; s_n=S_EMIT;
-                end else if (is_sin || is_sin_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_SIN)}; i_n=i+(is_sin?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_cos || is_cos_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_COS)}; i_n=i+(is_cos?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_tan || is_tan_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_TAN)}; i_n=i+(is_tan?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_sqrt_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_SQRT)}; i_n=i+8'd1; s_n=S_EMIT;
-                end else if (is_abs || is_abs_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_ABS)}; i_n=i+(is_abs?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_max || is_max_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_MAX)}; i_n=i+(is_max?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_min || is_min_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_MIN)}; i_n=i+(is_min?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_pow || is_pow_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_POW)}; i_n=i+(is_pow?8'd3:8'd1); s_n=S_EMIT;
-                end else if (is_ceil || is_ceil_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_CEIL)}; i_n=i+(is_ceil?8'd4:8'd1); s_n=S_EMIT;
-                end else if (is_floor || is_floor_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_FLOOR)}; i_n=i+(is_floor?8'd5:8'd1); s_n=S_EMIT;
-                end else if (is_round || is_round_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_ROUND)}; i_n=i+(is_round?8'd5:8'd1); s_n=S_EMIT;
-                end else if (is_ln || is_ln_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_LN)}; i_n=i+(is_ln?8'd2:8'd1); s_n=S_EMIT;
-                end else if (is_log || is_log_key) begin
-                    tok_buf_n = {1'b0, pack_fn(`FN_LOG)}; i_n=i+(is_log?8'd3:8'd1); s_n=S_EMIT;
+                    tok_buf_n = {1'b0, pack_op(`OP_OR)}; i_n=i+1; s_n=S_EMIT;
+                end else if (is_xor_key) begin
+                    tok_buf_n = {1'b0, pack_op(`OP_XOR)}; i_n=i+1; s_n=S_EMIT;
+                end else if (is_pow_char || is_pow_key) begin
+                    tok_buf_n = {1'b0, pack_op(`OP_POW)}; i_n=i+1; s_n=S_EMIT;
+                end else if (is_sin_key || is_cos_key || is_tan_key || is_sqrt_key ||
+                             is_ln_key  || is_log_key || is_abs_key  || is_floor_key ||
+                             is_ceil_key|| is_round_key || is_not_ascii) begin
+                    tok_buf_n = {1'b0, pack_fn(fn_id_from_key(ch))};
+                    i_n = i+1; s_n = S_EMIT;
+                end else if (is_min_key || is_max_key) begin
+                    tok_buf_n = {1'b0, pack_fn((ch==`MIN_KEY)?`FN_MIN:`FN_MAX)};
+                    i_n = i+1; s_n = S_EMIT;
                 end else begin
-                    tok_buf_n = {1'b0, pack_end};
-                    s_n = S_EMIT;
+                    // unknown → end
+                    s_n = S_END;
                 end
             end
             S_NUM: begin
@@ -180,20 +181,36 @@ module tokenizer #(
                 end
             end
             S_EMIT: begin
+                out_valid = 1'b1; out_tok = tok_buf;
                 if (out_ready) begin
-                    out_valid = 1'b1;
-                    out_tok   = tok_buf;
-                    if (tok_buf[32]) prev_value_n = 1'b1;
-                    else if (`TK_KIND(tok_buf)==`TK_KIND_RPAREN) prev_value_n = 1'b1;
-                    else prev_value_n = 1'b0;
-
-                    if (!tok_buf[32] && `TK_KIND(tok_buf)==`TK_KIND_END) begin
-                        done = 1'b1; s_n=S_IDLE;
+                    if (tok_buf[32]) begin
+                        prev_value_n = 1'b1;                // number
                     end else begin
-                        s_n = S_SCAN;
+                        case (`TK_KIND(tok_buf))
+                          `TK_KIND_RPAREN: prev_value_n = 1'b1;
+                          default:         prev_value_n = 1'b0;
+                        endcase
+                    end
+                    s_n = S_SCAN;
+                end
+            end
+            // flush missing ')' at end
+            S_TAIL: begin
+                if (tail_cnt != 0) begin
+                    out_valid = 1'b1; out_tok = {1'b0, pack_rp};
+                    if (out_ready) begin
+                        tail_cnt_n = tail_cnt - 1;
+                        if (tail_cnt_n == 0) s_n = S_END;
                     end
                 end else begin
-                    out_valid = 1'b1; out_tok = tok_buf;
+                    s_n = S_END;
+                end
+            end
+            // final END
+            S_END: begin
+                out_valid = 1'b1; out_tok = {1'b0, pack_end};
+                if (out_ready) begin
+                    done = 1'b1; s_n = S_IDLE;
                 end
             end
             default: s_n=S_IDLE;
@@ -201,8 +218,13 @@ module tokenizer #(
     end
 
     always @(posedge clk or posedge rst) begin
-        if (rst) begin s<=S_IDLE; i<=8'd0; prev_value<=1'b0; tok_buf<=33'd0;
-        end else begin s<=s_n; i<=i_n; prev_value<=prev_value_n; tok_buf<=tok_buf_n; end
+        if (rst) begin
+            s<=S_IDLE; i<=0; prev_value<=1'b0; tok_buf<=33'd0;
+            paren_balance<=0; tail_cnt<=0;
+        end else begin
+            s<=s_n; i<=i_n; prev_value<=prev_value_n; tok_buf<=tok_buf_n;
+            paren_balance<=paren_balance_n; tail_cnt<=tail_cnt_n;
+        end
     end
 endmodule
 
@@ -223,16 +245,16 @@ module shunting_yard #(
 
     function [6:0] op_info; input [3:0] id; begin
         case (id)
-            `OP_ADD:    op_info = {2'd2,3'd1,1'b0};
-            `OP_SUB:    op_info = {2'd2,3'd1,1'b0};
-            `OP_MUL:    op_info = {2'd2,3'd2,1'b0};
-            `OP_DIV:    op_info = {2'd2,3'd2,1'b0};
-            `OP_REM:    op_info = {2'd2,3'd2,1'b0};
-            `OP_AND:    op_info = {2'd2,3'd0,1'b0};
-            `OP_OR:     op_info = {2'd2,3'd0,1'b0};
-            `OP_XOR:    op_info = {2'd2,3'd0,1'b0};
-            `OP_POW:    op_info = {2'd2,3'd3,1'b1};
-            default:    op_info = {2'd1,3'd4,1'b1};
+            `OP_ADD: op_info = {2'd2,3'd1,1'b0};
+            `OP_SUB: op_info = {2'd2,3'd1,1'b0};
+            `OP_MUL: op_info = {2'd2,3'd2,1'b0};
+            `OP_DIV: op_info = {2'd2,3'd2,1'b0};
+            `OP_REM: op_info = {2'd2,3'd2,1'b0};
+            `OP_AND: op_info = {2'd2,3'd0,1'b0};
+            `OP_OR : op_info = {2'd2,3'd0,1'b0};
+            `OP_XOR: op_info = {2'd2,3'd0,1'b0};
+            `OP_POW: op_info = {2'd2,3'd3,1'b1};
+            default: op_info = {2'd1,3'd4,1'b1}; // unary as highest precedence (assoc right)
         endcase
     end endfunction
 
@@ -241,11 +263,11 @@ module shunting_yard #(
     reg [WTK*DEP-1:0] opv, opv_n;
     reg [$clog2(DEP+1)-1:0] sp, sp_n;
     reg [32:0] hold, hold_n;
-    reg have_hold, have_hold_n;
+    reg        have_hold, have_hold_n;
 
     wire [32:0] top = (sp==0) ? 33'd0 : opv[WTK*(sp-1)+:WTK];
-    wire top_is_op = (!top[32]) && (`TK_KIND(top)==`TK_KIND_OP);
-    
+    wire top_is_op   = (!top[32]) && (`TK_KIND(top)==`TK_KIND_OP);
+    wire top_is_func = (!top[32]) && (`TK_KIND(top)==`TK_KIND_FUNC);
     function need_pop; 
         input [32:0] cur_op, stk_op; 
         reg [6:0] ci, si;
@@ -255,8 +277,16 @@ module shunting_yard #(
         need_pop = (ci[0]) ? (si[3:1] > ci[3:1]) : (si[3:1] >= ci[3:1]);
     end endfunction
 
-    localparam [2:0] S_IDLE=3'd0,S_GET=3'd1,S_HOLD=3'd2,S_FLUSH=3'd3,S_DONE=3'd4;
+    localparam [2:0] S_IDLE=3'd0,S_GET=3'd1,S_HOLD=3'd2,S_FLUSH=3'd3,S_DONE=3'd4,
+                     S_FLUSHFN=3'd5;
     reg [2:0] s, s_n;
+
+    task emit_top;
+    begin
+        if (out_ready) begin out_valid=1'b1; out_tok=top; sp_n=sp-1; end
+        else            begin out_valid=1'b1; out_tok=top;             end
+    end
+    endtask
 
     always @* begin
         s_n=s; opv_n=opv; sp_n=sp; hold_n=hold; have_hold_n=have_hold;
@@ -268,20 +298,19 @@ module shunting_yard #(
                 if (in_valid) s_n=S_GET; else in_ready=1'b1;
             end
             S_GET: begin
-                if (!have_hold && in_valid) begin
-                    hold_n=in_tok; have_hold_n=1'b1; in_ready=1'b1;
-                end
+                if (!have_hold && in_valid) begin hold_n=in_tok; have_hold_n=1'b1; in_ready=1'b1; end
                 if (have_hold) begin
                     if (`TK_ISNUM(hold)) begin
-                        if (out_ready) begin out_valid=1'b1; out_tok=hold; have_hold_n=1'b0; end
-                        else begin out_valid=1'b1; out_tok=hold; end
+                        // output number, then immediately flush pending FUNCs (implicit application)
+                        if (out_ready) begin out_valid=1'b1; out_tok=hold; have_hold_n=1'b0; s_n=S_FLUSHFN; end
+                        else            begin out_valid=1'b1; out_tok=hold; end
                     end else begin
                         s_n=S_HOLD;
                     end
                 end
             end
             S_HOLD: begin
-                if (`TK_KIND(hold)==`TK_KIND_LPAREN) begin
+                if      (`TK_KIND(hold)==`TK_KIND_LPAREN) begin
                     opv_n[WTK*sp+:WTK]=hold; sp_n=sp+1; have_hold_n=1'b0; s_n=S_GET;
                 end else if (`TK_KIND(hold)==`TK_KIND_FUNC) begin
                     opv_n[WTK*sp+:WTK]=hold; sp_n=sp+1; have_hold_n=1'b0; s_n=S_GET;
@@ -289,21 +318,30 @@ module shunting_yard #(
                     if (sp==0) begin have_hold_n=1'b0; s_n=S_GET; end
                     else begin
                         if (`TK_KIND(top)==`TK_KIND_LPAREN) begin
-                            sp_n=sp-1;
+                            sp_n=sp-1; // pop '('
+                            // if function below '(', emit it (explicit call)
                             if (sp_n!=0 && opv[(WTK*(sp_n-1)+28)+:4]==`TK_KIND_FUNC) begin
-                                if (out_ready) begin out_valid=1'b1; out_tok=opv[WTK*(sp_n-1)+:WTK]; sp_n=sp_n-1; end
-                                else begin out_valid=1'b1; out_tok=opv[WTK*(sp_n-1)+:WTK]; end
+                                emit_top; // this emits the FUNC that was below '('
                             end
                             have_hold_n=1'b0; s_n=S_GET;
                         end else begin
-                            if (out_ready) begin out_valid=1'b1; out_tok=top; sp_n=sp-1; end
-                            else begin out_valid=1'b1; out_tok=top; end
+                            emit_top; // pop ops until '('
+                        end
+                    end
+
+                end else if (`TK_KIND(hold)==`TK_KIND_COMMA) begin
+                    // function arg separator: pop until '('
+                    if (sp==0) begin have_hold_n=1'b0; s_n=S_GET; end
+                    else begin
+                        if (`TK_KIND(top)==`TK_KIND_LPAREN) begin
+                            have_hold_n=1'b0; s_n=S_GET; // do not pop '('
+                        end else begin
+                            emit_top;
                         end
                     end
                 end else if (`TK_KIND(hold)==`TK_KIND_OP) begin
                     if (sp!=0 && top_is_op && need_pop(hold, top)) begin
-                        if (out_ready) begin out_valid=1'b1; out_tok=top; sp_n=sp-1; end
-                        else begin out_valid=1'b1; out_tok=top; end
+                        emit_top;
                     end else begin
                         opv_n[WTK*sp+:WTK] = hold; sp_n=sp+1; have_hold_n=1'b0; s_n=S_GET;
                     end
@@ -315,11 +353,19 @@ module shunting_yard #(
             end
             S_FLUSH: begin
                 if (sp!=0) begin
-                    if (out_ready) begin out_valid=1'b1; out_tok=opv[WTK*(sp-1)+:WTK]; sp_n=sp-1; end
-                    else begin out_valid=1'b1; out_tok=opv[WTK*(sp-1)+:WTK]; end
+                    emit_top;
                 end else begin
                     if (out_ready) begin out_valid=1'b1; out_tok={1'b0,{`TK_KIND_END,4'd0,24'd0}}; done=1'b1; s_n=S_DONE; end
-                    else begin out_valid=1'b1; out_tok={1'b0,{`TK_KIND_END,4'd0,24'd0}}; end
+                    else            begin out_valid=1'b1; out_tok={1'b0,{`TK_KIND_END,4'd0,24'd0}}; end
+                end
+            end
+
+            // NEW: after a primary, apply any pending implicit functions (highest precedence)
+            S_FLUSHFN: begin
+                if (sp!=0 && top_is_func) begin
+                    emit_top;
+                end else begin
+                    s_n = S_GET;
                 end
             end
             S_DONE: begin

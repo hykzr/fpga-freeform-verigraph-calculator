@@ -1148,201 +1148,404 @@ endmodule
 
 
 module math_ln_q16 (
-    input wire clk,
-    rst,
-    start,
-    input wire signed [31:0] a,
-    output reg signed [31:0] y,
-    output reg ready,
-    output reg [7:0] err
+    input  wire               clk,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // Q16.16, must be > 0
+    output reg signed  [31:0] y,      // ln(a) in Q16.16
+    output reg                ready,
+    output reg         [ 7:0] err
 );
-  reg [5:0] state;
-  reg signed [31:0] x;
-  reg signed [31:0] result;
-  reg signed [63:0] power;
-  reg signed [31:0] term;
-  reg signed [31:0] x_minus_1;
-  reg [5:0] n;
-  reg [4:0] scale_count;
+  // ---- constants (Q16.16) ----
+  reg signed [31:0] Q_ONE, Q_TWO, Q_ZERO, Q_MAX, Q_MIN, LN2_Q16;
+  initial begin
+    Q_ONE   = 32'sh0001_0000;  // 1.0
+    Q_TWO   = 32'sh0002_0000;  // 2.0
+    Q_ZERO  = 32'sd0;
+    Q_MAX   = 32'sh7FFF_FFFF;
+    Q_MIN   = 32'sh8000_0000;
+    LN2_Q16 = 32'sh0000_B172;  // ln(2) ? 0.693147
+  end
 
-  // Pipeline registers for division and multiplication
-  reg signed [63:0] power_next;
-  reg signed [31:0] term_next;
+  // ---- state enc ----
+  reg [2:0] S_IDLE, S_CHECK, S_NORM, S_PREP, S_ITER, S_FIN1, S_FIN2, S_DONE;
+  initial begin
+    S_IDLE  = 3'd0;
+    S_CHECK = 3'd1;
+    S_NORM  = 3'd2;
+    S_PREP  = 3'd3;
+    S_ITER  = 3'd4;
+    S_FIN1  = 3'd5;
+    S_FIN2  = 3'd6;
+    S_DONE  = 3'd7;
+  end
+  reg [2:0] state, state_n;
 
+  // ---- datapath regs ----
+  reg signed [31:0] a_mag, m;
+  reg signed [7:0] k;  // a = m*2^k
+
+  // CORDIC state
+  reg signed [31:0] x, yv, z;
+  reg [5:0] i;
+  reg       rep_do;
+
+  // flags
+  reg inexact, underflow, overflow;
+
+  // helpers / temps (module-scope)
+  wire signed [31:0] x_shift = $signed(x) >>> i;
+  wire signed [31:0] y_shift = $signed(yv) >>> i;
+  wire               need_repeat = (i == 6'd4) || (i == 6'd13);
+
+  // 64-bit final accumulator terms
+  reg signed  [63:0] term_twoz;  // 2*z in 64-bit
+  reg signed  [63:0] term_kln2;  // k*ln(2) in 64-bit
+  reg signed  [63:0] sum64;  // final 64-bit sum before saturation
+
+  // for saturation compare
+  reg signed [63:0] QMAX_64, QMIN_64;
+  initial begin
+    QMAX_64 = 64'sh0000_0000_7FFF_FFFF;
+    QMIN_64 = 64'shFFFF_FFFF_8000_0000;
+  end
+
+  // atanh table as function
+  function [31:0] atanh_q16;
+    input [5:0] idx;
+    begin
+      case (idx)
+        6'd1: atanh_q16 = 32'sh00008C9F;  // 0.5493061443
+        6'd2: atanh_q16 = 32'sh00004163;  // 0.2554128119
+        6'd3: atanh_q16 = 32'sh0000202B;  // 0.1256572141
+        6'd4: atanh_q16 = 32'sh00001005;  // 0.0625815715
+        6'd5: atanh_q16 = 32'sh00000801;  // 0.0312601785
+        6'd6: atanh_q16 = 32'sh00000400;  // 0.0156262718
+        6'd7: atanh_q16 = 32'sh00000200;  // 0.0078126589
+        6'd8: atanh_q16 = 32'sh00000100;
+        6'd9: atanh_q16 = 32'sh00000080;
+        6'd10: atanh_q16 = 32'sh00000040;
+        6'd11: atanh_q16 = 32'sh00000020;
+        6'd12: atanh_q16 = 32'sh00000010;
+        6'd13: atanh_q16 = 32'sh00000008;
+        6'd14: atanh_q16 = 32'sh00000004;
+        6'd15: atanh_q16 = 32'sh00000002;
+        6'd16: atanh_q16 = 32'sh00000001;
+        6'd17: atanh_q16 = 32'sh00000001;
+        default: atanh_q16 = 32'sh00000000;
+      endcase
+    end
+  endfunction
+
+  // ---- sequential ----
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      y <= 32'sd0;
+      state <= S_IDLE;
       ready <= 1'b0;
       err <= 8'd0;
-      state <= 6'd0;
+      y <= 32'sd0;
+
+      a_mag <= 32'sd0;
+      m <= 32'sd0;
+      k <= 8'sd0;
       x <= 32'sd0;
-      result <= 32'sd0;
-      power <= 64'sd0;
-      term <= 32'sd0;
-      x_minus_1 <= 32'sd0;
-      n <= 6'd0;
-      scale_count <= 5'd0;
-      power_next <= 64'sd0;
-      term_next <= 32'sd0;
+      yv <= 32'sd0;
+      z <= 32'sd0;
+      i <= 6'd0;
+      rep_do <= 1'b0;
+
+      inexact <= 1'b0;
+      underflow <= 1'b0;
+      overflow <= 1'b0;
+
+      term_twoz <= 64'sd0;
+      term_kln2 <= 64'sd0;
+      sum64 <= 64'sd0;
+
     end else begin
+      state <= state_n;
+      ready <= 1'b0;
+
       case (state)
-        6'd0: begin
-          ready <= 1'b0;
+        S_IDLE: begin
           if (start) begin
-            if (a <= 32'sd0) begin
-              y <= 32'sd0;
-              err <= 8'd1;
-              ready <= 1'b1;
-              state <= 6'd0;
-            end else begin
-              x <= a;
-              result <= 32'sd0;
-              scale_count <= 5'd0;
-              state <= 6'd1;
-            end
+            err       <= 8'd0;
+            inexact   <= 1'b0;
+            underflow <= 1'b0;
+            overflow  <= 1'b0;
+            a_mag     <= a;
           end
         end
-        6'd1: begin
-          if (x < 32'sd32768) begin
-            x <= x << 1;
-            result <= result - 32'sd45426;
-            scale_count <= scale_count + 5'd1;
-            if (scale_count >= 5'd10) begin
-              state <= 6'd2;
-            end
-          end else if (x > 32'sd131072) begin
-            x <= x >> 1;
-            result <= result + 32'sd45426;
-            scale_count <= scale_count + 5'd1;
-            if (scale_count >= 5'd10) begin
-              state <= 6'd2;
-            end
-          end else begin
-            state <= 6'd2;
-          end
-        end
-        6'd2: begin
-          x_minus_1 <= x - 32'sd65536;
-          // Wait one cycle for x_minus_1 to be ready
-          state <= 6'd5;
-        end
-        6'd5: begin
-          // Now x_minus_1 is stable
-          power <= {x_minus_1, 16'd0};
-          n <= 6'd1;
-          state <= 6'd3;
-        end
-        6'd3: begin
-          if (n >= 6'd16) begin
-            y <= result;
-            err <= 8'd0;
+
+        S_CHECK: begin
+          if (a_mag <= Q_ZERO) begin
+            y     <= 32'sd0;
+            err   <= 8'b0000_0001;  // DOMAIN
             ready <= 1'b1;
-            state <= 6'd0;
           end else begin
-            // Calculate division, but don't use result yet
-            term_next <= power[47:16] / $signed({26'd0, n});
-            state <= 6'd6;
+            m <= a_mag;
+            k <= 8'sd0;  // start normalization
           end
         end
-        6'd6: begin
-          // Pipeline stage: division result is now stable
-          term <= term_next;
-          // Pre-calculate multiplication for next iteration
-          power_next <= (power[47:16] * x_minus_1);
-          state <= 6'd4;
-        end
-        6'd4: begin
-          // Now term is stable, update result
-          if (n[0] == 1'b1) begin
-            result <= result + term;
-          end else begin
-            result <= result - term;
+
+        // normalize m into [1,2), tracking k
+        S_NORM: begin
+          if (m >= Q_TWO) begin
+            m <= m >>> 1;
+            k <= k + 8'sd1;
+          end else if (m < Q_ONE) begin
+            m <= m <<< 1;
+            k <= k - 8'sd1;
           end
-          // Power update is now stable
-          power <= power_next;
-          n <= n + 6'd1;
-          state <= 6'd3;
         end
-        default: state <= 6'd0;
+
+        S_PREP: begin
+          x       <= m + Q_ONE;  // x0 = m+1
+          yv      <= m - Q_ONE;  // y0 = m-1
+          z       <= 32'sd0;
+          i       <= 6'd1;
+          rep_do  <= 1'b0;
+          inexact <= 1'b0;
+        end
+
+        // Hyperbolic CORDIC vectoring, repeats at i=4,13
+        S_ITER: begin
+          if (yv >= 0) begin
+            // d = -1
+            x  <= x - y_shift;
+            yv <= yv - x_shift;
+            z  <= z + atanh_q16(i);  // z <- z - d*atanh = z + atanh
+          end else begin
+            // d = +1
+            x  <= x + y_shift;
+            yv <= yv + x_shift;
+            z  <= z - atanh_q16(i);
+          end
+
+          if ((i == 6'd24) && (yv != 32'sd0)) inexact <= 1'b1;
+
+          if (need_repeat && !rep_do) begin
+            rep_do <= 1'b1;  // repeat this i once
+          end else begin
+            rep_do <= 1'b0;
+            i      <= i + 6'd1;
+          end
+        end
+
+        // FIX: Split final computation into two cycles
+        // Cycle 1: Compute terms
+        S_FIN1: begin
+          // term_twoz = 2*z (Q16.16 << 1), sign-extended to 64b
+          term_twoz <= {{32{z[31]}}, z} <<< 1;
+
+          // term_kln2 = k * LN2_Q16 (signed 8-bit * Q16.16 -> Q16.16 in 64-bit)
+          term_kln2 <= $signed({{56{k[7]}}, k}) * $signed({{32{LN2_Q16[31]}}, LN2_Q16});
+        end
+
+        // Cycle 2: Sum the terms
+        S_FIN2: begin
+          sum64 <= term_twoz + term_kln2;
+        end
+
+        S_DONE: begin
+          // Saturate sum64 to 32-bit Q16.16
+          if (sum64 > QMAX_64) begin
+            y        <= Q_MAX;
+            overflow <= 1'b1;
+          end else if (sum64 < QMIN_64) begin
+            y        <= Q_MIN;
+            overflow <= 1'b1;
+          end else begin
+            y <= sum64[31:0];
+            if ((sum64[31:0] == 32'sd0) && (a_mag != Q_ONE)) underflow <= 1'b1;
+          end
+
+          err[1]   <= overflow;
+          err[2]   <= underflow;
+          // err[3]   <= inexact;
+          err[7:3] <= 5'b00000;
+          ready    <= 1'b1;
+        end
       endcase
     end
   end
+
+  // ---- next-state ----
+  always @* begin
+    state_n = state;
+    case (state)
+      S_IDLE:  if (start) state_n = S_CHECK;
+      S_CHECK: if (a_mag <= Q_ZERO) state_n = S_DONE;
+ else state_n = S_NORM;
+      S_NORM:  if ((m >= Q_ONE) && (m < Q_TWO)) state_n = S_PREP;
+ else state_n = S_NORM;
+      S_PREP:  state_n = S_ITER;
+      S_ITER:  if (i > 6'd24) state_n = S_FIN1;
+ else state_n = S_ITER;
+      S_FIN1:  state_n = S_FIN2;
+      S_FIN2:  state_n = S_DONE;
+      S_DONE:  state_n = S_IDLE;
+      default: state_n = S_IDLE;
+    endcase
+  end
+
 endmodule
 
 module math_log_q16 (
-    input wire clk,
-    rst,
-    start,
-    input wire signed [31:0] a,
-    output reg signed [31:0] y,
-    output reg ready,
-    output reg [7:0] err
+    input  wire               clk,
+    input  wire               rst,    // synchronous, active-high
+    input  wire               start,  // 1-cycle pulse when idle
+    input  wire signed [31:0] a,      // Q16.16, must be > 0
+    output reg signed  [31:0] y,      // log10(x) in Q16.16
+    output wire               ready,  // 1-cycle pulse on completion
+    output wire               err     // sticky (1=any error since last start)
 );
-  reg [5:0] state;
-  wire signed [31:0] ln_out;
-  wire ln_ready;
-  wire [7:0] ln_err;
-  reg ln_start;
-  reg signed [31:0] a_reg;
-  reg signed [63:0] temp_result;
 
-  localparam signed [31:0] LN10_INV = 32'sd28394;
+  // ln(10) in Q16.16
+  localparam signed [31:0] LN10_Q16 = 32'sh0002_4D76;  // 2.302585...
 
-  math_ln_q16 ln_inst (
-      .clk(clk),
-      .rst(rst),
+  // FSM
+  localparam [2:0] S_IDLE   = 3'd0,
+                   S_RUNLN  = 3'd1,
+                   S_WAITLN = 3'd2,
+                   S_RUNDIV = 3'd3,
+                   S_WAITDV = 3'd4,
+                   S_DONE   = 3'd5;
+
+  reg [2:0] state, state_n;
+
+  // Submodule handshakes
+  reg                ln_start;
+  wire               ln_ready;
+  wire        [ 7:0] ln_err;
+  wire signed [31:0] ln_y;
+
+  reg                div_start;
+  wire               div_ready;
+  wire        [ 7:0] div_err;
+  wire signed [31:0] div_y;
+
+  // Latched ln(x)
+  reg signed  [31:0] ln_y_hold;
+
+  // Sticky error + done pulse
+  reg                err_sticky;
+  reg                done_r;
+  assign err   = err_sticky;
+  assign ready = done_r;
+
+  // convenience
+  wire ln_domain_err = ln_err[0];  // x<=0
+  wire ln_overflow = ln_err[1];
+  wire ln_underflow = ln_err[2];
+  // Fallback: near x?1, use ln(x) ? x-1 if ln underflowed to 0 but domain OK
+  wire use_linear_fallback = (~ln_domain_err) & ln_underflow;
+
+  // Submodules
+  math_ln_q16 u_ln (
+      .clk  (clk),
+      .rst  (rst),
       .start(ln_start),
-      .a(a_reg),
-      .y(ln_out),
+      .a    (a),
+      .y    (ln_y),
       .ready(ln_ready),
-      .err(ln_err)
+      .err  (ln_err)
   );
 
-  always @(posedge clk or posedge rst) begin
+  math_div_q16 u_div (
+      .clk  (clk),
+      .rst  (rst),
+      .start(div_start),
+      .a    (ln_y_hold),  // latched ln(x) or fallback
+      .b    (LN10_Q16),
+      .y    (div_y),
+      .ready(div_ready),
+      .err  (div_err)
+  );
+
+  // Sequential
+  always @(posedge clk) begin
     if (rst) begin
-      y <= 32'sd0;
-      ready <= 1'b0;
-      err <= 8'd0;
-      state <= 6'd0;
-      ln_start <= 1'b0;
-      a_reg <= 32'sd0;
-      temp_result <= 64'sd0;
+      state      <= S_IDLE;
+      ln_start   <= 1'b0;
+      div_start  <= 1'b0;
+      ln_y_hold  <= 32'sd0;
+      y          <= 32'sd0;
+      done_r     <= 1'b0;
+      err_sticky <= 1'b0;
     end else begin
+      state     <= state_n;
+
+      // defaults
+      ln_start  <= 1'b0;
+      div_start <= 1'b0;
+      done_r    <= 1'b0;
+
       case (state)
-        6'd0: begin
-          ready <= 1'b0;
-          ln_start <= 1'b0;
+        S_IDLE: begin
+          // clear sticky error on a fresh start
           if (start) begin
-            a_reg <= a;
-            ln_start <= 1'b1;
-            state <= 6'd1;
+            err_sticky <= 1'b0;
+            ln_start   <= 1'b1;  // kick ln
           end
         end
-        6'd1: begin
-          ln_start <= 1'b0;
-          state <= 6'd2;
+
+        S_RUNLN: begin
+          // transit
         end
-        6'd2: begin
+
+        S_WAITLN: begin
           if (ln_ready) begin
-            if (ln_err != 8'd0) begin
+            // accumulate any ln errors
+            if (|ln_err) err_sticky <= 1'b1;
+
+            if (ln_domain_err) begin
+              // x<=0: stop here, y=0
               y <= 32'sd0;
-              err <= ln_err;
-              ready <= 1'b1;
-              state <= 6'd0;
+              // go S_DONE via next-state logic
             end else begin
-              temp_result <= ln_out * LN10_INV;
-              state <= 6'd3;
+              // Prepare ln(x) for division
+              if (use_linear_fallback && (ln_y == 32'sd0)) begin
+                // ln(x) ? x-1 for |x-1|<<1
+                ln_y_hold <= a - 32'sh0001_0000;
+              end else begin
+                ln_y_hold <= ln_y;
+              end
+              div_start <= 1'b1;  // one-cycle start to divider
             end
           end
         end
-        6'd3: begin
-          y <= temp_result[47:16];
-          err <= 8'd0;
-          ready <= 1'b1;
-          state <= 6'd0;
+
+        S_RUNDIV: begin
+          // transit
         end
-        default: state <= 6'd0;
+
+        S_WAITDV: begin
+          if (div_ready) begin
+            y <= div_y;
+            if (|div_err) err_sticky <= 1'b1;
+          end
+        end
+
+        S_DONE: begin
+          done_r <= 1'b1;  // 1-cycle pulse
+        end
       endcase
     end
   end
+
+  // Next-state
+  always @* begin
+    state_n = state;
+    case (state)
+      S_IDLE:   state_n = start ? S_RUNLN : S_IDLE;
+      S_RUNLN:  state_n = S_WAITLN;
+      S_WAITLN: state_n = ln_ready ? ((ln_domain_err) ? S_DONE : S_RUNDIV) : S_WAITLN;
+      S_RUNDIV: state_n = S_WAITDV;
+      S_WAITDV: state_n = div_ready ? S_DONE : S_WAITDV;
+      S_DONE:   state_n = S_IDLE;
+      default:  state_n = S_IDLE;
+    endcase
+  end
+
 endmodule

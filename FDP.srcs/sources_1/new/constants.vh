@@ -18,6 +18,7 @@
 `define MAX_KEY    8'h8C
 `define POW_KEY    8'h8D
 `define BACK_KEY    8'h8E
+`define XOR_KEY 8'h8F
 
 // Special bracket glyphs for rendering
 `define CEIL_L_KEY   8'h90  // ⌈
@@ -34,6 +35,7 @@
 `define TK_KIND_RPAREN 4'd3
 `define TK_KIND_FUNC  4'd4
 `define TK_KIND_END   4'd15
+`define TK_KIND_COMMA 4'd5
 
 // ---- Theme (RGB565) ----
 `define C_BG     16'h0000
