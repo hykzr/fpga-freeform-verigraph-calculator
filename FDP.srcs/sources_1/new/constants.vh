@@ -40,9 +40,16 @@
 // ---- Theme (RGB565) ----
 `define C_BG     16'h0000
 `define C_BTN    16'h39E7
-`define C_FOCUS  16'hFFE0
+`define C_FOCUS  16'b00111_001000_10000
 `define C_TEXT   16'hFFFF
 `define C_BORDER 16'h0841
+
+`define C_NUMBER    16'b10110_110001_10101  // Light green
+`define C_FUNCTION  16'b11111_111111_10011  // Light yellow
+`define C_VARIABLE  16'b10011_110111_11111  // Light blue
+`define C_CONSTANT  16'b00011_100111_11110  // Sky blue/Azure
+`define C_BRACKET   16'b11011_011100_11010  // Pink/Magenta
+`define C_OPERATOR  16'hFFFF  // White
 
 `define OP_ADD    5'd0
 `define OP_SUB    5'd1

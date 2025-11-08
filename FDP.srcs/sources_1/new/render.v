@@ -26,46 +26,46 @@ module oled (
 endmodule
 
 module text_grid_renderer #(
-    parameter integer FONT_SCALE = 2,  // 1,2,3,...
-    parameter integer MAX_DATA   = 32  // must be >= COLS*ROWS
+    parameter integer FONT_SCALE = 2,
+    parameter integer MAX_DATA   = 32
 ) (
-    input  wire [          12:0] pixel_index,  // from oled wrapper
-    input  wire [           7:0] text_len,     // 0..MAX_DATA
-    input  wire [8*MAX_DATA-1:0] text_bus,     // byte i at [8*i +: 8]
-    output reg  [          15:0] pixel_color
+    input  wire [           12:0] pixel_index,
+    input  wire [            7:0] text_len,
+    input  wire [ 8*MAX_DATA-1:0] text_bus,
+    input  wire [16*MAX_DATA-1:0] color_bus,    // Color per character
+    output reg  [           15:0] pixel_color
 );
-  // ---- Derived geometry (from constants + params) ----
   localparam integer DISP_W = `DISP_W;
   localparam integer DISP_H = `DISP_H;
 
   localparam integer GW = 5 * FONT_SCALE;
   localparam integer GH = 7 * FONT_SCALE;
-  localparam integer CELL_W = GW + FONT_SCALE;  // e.g., 10+2=12
-  localparam integer CELL_H = GH + FONT_SCALE;  // e.g., 14+2=16
-  localparam integer COLS = DISP_W / CELL_W;  // 96/12=8
-  localparam integer ROWS = DISP_H / CELL_H;  // 64/16=4
+  localparam integer CELL_W = GW + FONT_SCALE;
+  localparam integer CELL_H = GH + FONT_SCALE;
+  localparam integer COLS = DISP_W / CELL_W;
+  localparam integer ROWS = DISP_H / CELL_H;
 
-  // ---- Current pixel (x,y) ----
-  wire [6:0] x = pixel_index % DISP_W;
-  wire [6:0] y = pixel_index / DISP_W;
+  wire [ 6:0] x = pixel_index % DISP_W;
+  wire [ 6:0] y = pixel_index / DISP_W;
 
-  // ---- Which text cell? ----
-  wire [2:0] cx = x / CELL_W;  // 0..COLS-1 (fits in 3 bits for COLS<=8)
-  wire [2:0] cy = y / CELL_H;  // 0..ROWS-1
-  wire [6:0] ox = cx * CELL_W;  // cell origin X
-  wire [6:0] oy = cy * CELL_H;  // cell origin Y
+  wire [ 2:0] cx = x / CELL_W;
+  wire [ 2:0] cy = y / CELL_H;
+  wire [ 6:0] ox = cx * CELL_W;
+  wire [ 6:0] oy = cy * CELL_H;
 
-  // ---- Linear index into text (row-major) ----
-  wire [7:0] idx = cy * COLS + cx;  // up to 31 with default params
+  wire [ 7:0] idx = cy * COLS + cx;
 
-  // ---- Pick ASCII for this cell ----
-  reg  [7:0] ascii;
+  reg  [ 7:0] ascii;
+  reg  [15:0] char_color;
   always @* begin
-    ascii = 8'h20;  // space by default
-    if ((idx < text_len) && (idx < MAX_DATA)) ascii = text_bus[8*idx+:8];
+    ascii = 8'h20;
+    char_color = `C_TEXT;  // Default text color
+    if ((idx < text_len) && (idx < MAX_DATA)) begin
+      ascii = text_bus[8*idx+:8];
+      char_color = color_bus[16*idx+:16];
+    end
   end
 
-  // ---- Glyph placement: center inside the cell ----
   wire [6:0] gx = ox + (CELL_W - GW) / 2;
   wire [6:0] gy = oy + (CELL_H - GH) / 2;
 
@@ -81,10 +81,9 @@ module text_grid_renderer #(
       .on(glyph_on)
   );
 
-  // ---- Compose color: background vs text ----
   always @* begin
     pixel_color = `C_BG;
-    if (glyph_on) pixel_color = `C_TEXT;
+    if (glyph_on) pixel_color = char_color;  // Use per-character color
   end
 endmodule
 
@@ -92,11 +91,12 @@ module text_oled #(
     parameter integer FONT_SCALE = 2,
     parameter integer MAX_DATA   = 32
 ) (
-    input  wire                  clk_pix,   // 6.25 MHz OLED pixel clock
-    input  wire                  rst,       // active-high reset
-    input  wire [           7:0] text_len,  // 0..MAX_DATA
-    input  wire [8*MAX_DATA-1:0] text_bus,  // byte i at [8*i +: 8]
-    output wire [           7:0] oled_out   // hook to JB[7:0] (or JA/JC)
+    input  wire                   clk_pix,
+    input  wire                   rst,
+    input  wire [            7:0] text_len,
+    input  wire [ 8*MAX_DATA-1:0] text_bus,
+    input  wire [16*MAX_DATA-1:0] color_bus,  // Color input
+    output wire [            7:0] oled_out
 );
   wire [12:0] pixel_index;
   wire [15:0] pixel_color;
@@ -107,7 +107,8 @@ module text_oled #(
       .pixel_index(pixel_index),
       .pixel_color(pixel_color),
       .text_bus(text_bus),
-      .text_len(text_len)
+      .text_len(text_len),
+      .color_bus(color_bus)
   );
   oled u_oled (
       .clk_6p25m  (clk_pix),

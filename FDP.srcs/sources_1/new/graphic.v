@@ -12,7 +12,7 @@ module viewport_ctrl (
     input  wire               drag_active,
     input  wire signed [ 7:0] drag_delta_x_px,
     input  wire signed [ 6:0] drag_delta_y_px,
-    output reg signed  [ 3:0] zoom_exp,
+    output reg signed  [ 4:0] zoom_exp,
     output reg signed  [31:0] offset_x_q16_16,
     output reg signed  [31:0] offset_y_q16_16
 );
@@ -20,7 +20,7 @@ module viewport_ctrl (
 
   wire signed [31:0] pan_step_world_q16_pos;
   wire signed [31:0] pan_step_world_q16_neg;
-  wire        [ 3:0] zoom_exp_neg = -zoom_exp[3:0];
+  wire        [ 4:0] zoom_exp_neg = -zoom_exp[4:0];
 
   assign pan_step_world_q16_pos = PAN_STEP_PIX_Q >>> zoom_exp;
   assign pan_step_world_q16_neg = PAN_STEP_PIX_Q <<< zoom_exp_neg;
@@ -40,16 +40,16 @@ module viewport_ctrl (
 
   always @(posedge clk) begin
     if (rst) begin
-      zoom_exp        <= 4'sd0;
+      zoom_exp        <= 5'sd0;
       offset_x_q16_16 <= 32'sd0;
       offset_y_q16_16 <= 32'sd0;
     end else begin
-      if (pulse_zoom_in && (zoom_exp < 4'sd4) && !pulse_zoom_out) begin
-        zoom_exp        <= zoom_exp + 4'sd1;
+      if (pulse_zoom_in && (zoom_exp < 5'sd7) && !pulse_zoom_out) begin
+        zoom_exp        <= zoom_exp + 5'sd1;
         offset_x_q16_16 <= offset_x_q16_16 >>> 1;
         offset_y_q16_16 <= offset_y_q16_16 >>> 1;
-      end else if (pulse_zoom_out && (zoom_exp > -4'sd3) && !pulse_zoom_in) begin
-        zoom_exp        <= zoom_exp - 4'sd1;
+      end else if (pulse_zoom_out && (zoom_exp > -5'sd8) && !pulse_zoom_in) begin
+        zoom_exp        <= zoom_exp - 5'sd1;
         offset_x_q16_16 <= offset_x_q16_16 <<< 1;
         offset_y_q16_16 <= offset_y_q16_16 <<< 1;
       end else if (drag_active && (drag_delta_x_px != 0 || drag_delta_y_px != 0)) begin
@@ -68,7 +68,7 @@ module viewport_ctrl (
 endmodule
 
 module range_planner (
-    input  wire signed [ 3:0] zoom_exp,         // uniform zoom exponent
+    input  wire signed [ 4:0] zoom_exp,         // uniform zoom exponent
     input  wire signed [31:0] offset_x_q16_16,
     output reg signed  [31:0] x_start_q16_16,
     output reg signed  [31:0] x_step_q16_16,
@@ -77,7 +77,7 @@ module range_planner (
   localparam integer SCREEN_W = `DISP_W;
   localparam integer CENTER_X = (`DISP_W / 2);
   wire signed [31:0] neg_cx_q = -(`TO_Q16_16(CENTER_X));
-  wire        [ 3:0] e_neg = -zoom_exp[3:0];
+  wire        [ 4:0] e_neg = -zoom_exp[4:0];
 
   assign sample_count = SCREEN_W[7:0];
 
@@ -94,7 +94,7 @@ module mapper_plot_points (
     input wire rst,
 
     // viewport (uniform zoom via exponent)
-    input wire signed [ 3:0] zoom_exp,
+    input wire signed [ 4:0] zoom_exp,
     input wire signed [31:0] offset_x_q16_16,
     input wire signed [31:0] offset_y_q16_16,
 
@@ -128,7 +128,7 @@ module mapper_plot_points (
   reg [6 * SCREEN_W - 1 : 0] curve_y;
   reg [SCREEN_W - 1 : 0] curve_y_valid;
 
-  wire [3:0] e_neg = -zoom_exp[3:0];
+  wire [4:0] e_neg = -zoom_exp[4:0];
 
   wire signed [31:0] dx_q16 = x_q16_16 + offset_x_q16_16;
   wire signed [31:0] dy_q16 = y_q16_16 + offset_y_q16_16;
@@ -194,10 +194,14 @@ module mapper_plot_points (
   wire on_axes = on_vaxis || on_haxis;
 
   // origin dot (single pixel)
-  wire on_origin = px_org_in && py_org_in && (sx == px_org[6:0]) && (sy == py_org[5:0]);
+  wire on_origin = px_org_in && py_org_in 
+  && (sx == px_org[6:0]||sx == (px_org[6:0]-1)||sx == (px_org[6:0]+1)) 
+  && (sy == py_org[5:0]||sy == (py_org[5:0]-1)||sy == (py_org[5:0]+1));
 
   // unit dot at (4,0)
-  wire on_unit = unit_inb && (sx == px_unit[6:0]) && (sy == py_unit[5:0]);
+  wire on_unit = unit_inb 
+  && (sx == px_unit[6:0]||sx == (px_unit[6:0]-1)||sx == (px_unit[6:0]+1)) 
+  && (sy == py_unit[5:0]||sy == (py_unit[5:0]-1)||sy == (py_unit[5:0]+1));
 
   // curve pixel - check exact match at current x
   wire on_curve_point = show_curves && curve_y_valid[sx] && curve_y[sx*6] == sy[0] 
@@ -300,7 +304,7 @@ module graph_plotter_core (
 
   wire need_clear = up_p | down_p | left_p | right_p | confirm_p | drag_active;
 
-  wire signed [3:0] zoom_exp;
+  wire signed [4:0] zoom_exp;
   wire signed [31:0] offset_x_q16_16;
   wire signed [31:0] offset_y_q16_16;
 

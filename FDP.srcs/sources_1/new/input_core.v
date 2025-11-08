@@ -51,15 +51,17 @@ module token_to_ascii_decoder #(
     input wire [8*MAX_DATA-1:0] token_buf,
     input wire [           7:0] token_len,
 
-    output reg [8*MAX_DATA-1:0] ascii_buf,
-    output reg [           7:0] ascii_len
+    output reg [ 8*MAX_DATA-1:0] ascii_buf,
+    output reg [            7:0] ascii_len,
+    output reg [16*MAX_DATA-1:0] color_buf   // 16-bit color per character
 );
   // ----------------------------
   // Internal snapshot & workbuf
   // ----------------------------
-  reg [8*MAX_DATA-1:0] tok_snap;  // snapshot of token_buf at start
-  reg [8*MAX_DATA-1:0] ascii_work;  // build result here
-  reg [           7:0] ascii_len_work;
+  reg [ 8*MAX_DATA-1:0] tok_snap;
+  reg [ 8*MAX_DATA-1:0] ascii_work;
+  reg [            7:0] ascii_len_work;
+  reg [16*MAX_DATA-1:0] color_work;  // Color buffer
 
   // ----------------------------
   // Control
@@ -72,18 +74,59 @@ module token_to_ascii_decoder #(
 
   reg [2:0] state, state_n;
 
-  reg [ 7:0] start_len;  // token_len latched at start
-  reg [ 7:0] i_tok;  // token index (0..start_len-1)
-  reg [ 2:0] j_emit;  // emitted chars for current token (0..exp_len-1)
-  reg [ 7:0] out_idx;  // total output bytes written (0..MAX_DATA)
+  reg [ 7:0] start_len;
+  reg [ 7:0] i_tok;
+  reg [ 2:0] j_emit;
+  reg [ 7:0] out_idx;
 
   // expansion of current token
   reg [ 7:0] tok;
-  reg [ 2:0] exp_len;  // 0..5
-  reg [39:0] exp_bytes;  // 5 bytes max, LSB-first = first to write
+  reg [ 2:0] exp_len;
+  reg [39:0] exp_bytes;
+  reg [15:0] tok_color;  // Color for this token
 
-  // pending restart if token_len changed mid-run
   reg        pending_start;
+
+  // ---------------------------------
+  // Token classification for color
+  // ---------------------------------
+  function [15:0] get_token_color;
+    input [7:0] token;
+    begin
+      casez (token)
+        // Numbers (0-9)
+        8'h30, 8'h31, 8'h32, 8'h33, 8'h34,
+        8'h35, 8'h36, 8'h37, 8'h38, 8'h39, 8'h2E:  // '.' for decimal
+        get_token_color = `C_NUMBER;
+
+        // Functions
+        `SIN_KEY, `COS_KEY, `TAN_KEY, `LN_KEY, `LOG_KEY,
+        `ABS_KEY, `FLOOR_KEY, `CEIL_KEY, `ROUND_KEY,
+        `MIN_KEY, `MAX_KEY, `POW_KEY, `SQRT_KEY:
+        get_token_color = `C_FUNCTION;
+
+        // Variable (x)
+        8'h78:  // 'x'
+        get_token_color = `C_VARIABLE;
+
+        // Constants (e, pi)
+        8'h65, `PI_KEY:  // 'e' and pi
+        get_token_color = `C_CONSTANT;
+
+        // Brackets
+        8'h28, 8'h29:  // '(' and ')'
+        get_token_color = `C_BRACKET;
+
+        // Operators (+, -, *, /, ^, &, |, ~, etc.)
+        8'h2B, 8'h2D, 8'h2A, 8'h2F, 8'h5E,  // + - * / ^
+        8'h26, 8'h7C, 8'h7E, `XOR_KEY:  // & | ~ xor
+        get_token_color = `C_OPERATOR;
+
+        // Default (white for anything else)
+        default: get_token_color = `C_OPERATOR;
+      endcase
+    end
+  endfunction
 
   // ---------------------------------
   // Expansion dictionary (combinational)
@@ -91,7 +134,8 @@ module token_to_ascii_decoder #(
   always @* begin
     tok       = tok_snap[8*i_tok+:8];
     exp_len   = 3'd1;
-    exp_bytes = {32'h0000_0000, tok};  // default: passthrough
+    exp_bytes = {32'h0000_0000, tok};
+    tok_color = get_token_color(tok);
 
     case (tok)
       `SIN_KEY: begin
@@ -142,7 +186,7 @@ module token_to_ascii_decoder #(
         exp_len   = 3'd3;
         exp_bytes = {16'h0000, "w", "o", "p"};
       end
-      default: ;  // passthrough already set
+      default: ;
     endcase
   end
 
@@ -172,8 +216,10 @@ module token_to_ascii_decoder #(
       state          <= S_IDLE;
       ascii_buf      <= {8 * MAX_DATA{1'b0}};
       ascii_len      <= 8'd0;
+      color_buf      <= {16 * MAX_DATA{1'b0}};
       ascii_work     <= {8 * MAX_DATA{1'b0}};
       ascii_len_work <= 8'd0;
+      color_work     <= {16 * MAX_DATA{1'b0}};
       start_len      <= 8'd0;
       tok_snap       <= {8 * MAX_DATA{1'b0}};
       i_tok          <= 8'd0;
@@ -183,61 +229,54 @@ module token_to_ascii_decoder #(
     end else begin
       state <= state_n;
 
-      // Detect changes during busy work; queue a restart
       if (state != S_IDLE && token_len != start_len) pending_start <= 1'b1;
 
       case (state)
         S_IDLE: begin
-          // accept new start immediately from IDLE
           if (token_len != start_len) begin
             pending_start <= 1'b0;
           end
         end
 
         S_SNAP: begin
-          // Snapshot inputs and reset work buffers
-          tok_snap       <= token_buf;  // 256 FFs; keeps fanout small during decode
+          tok_snap       <= token_buf;
           start_len      <= token_len;
           ascii_work     <= {8 * MAX_DATA{1'b0}};
           ascii_len_work <= 8'd0;
+          color_work     <= {16 * MAX_DATA{1'b0}};
           i_tok          <= 8'd0;
           j_emit         <= 3'd0;
           out_idx        <= 8'd0;
-          // (Optional alternative behavior)
-          // If you prefer "abort & restart immediately", you can also clear pending_start here:
-          // pending_start   <= 1'b0;
         end
 
         S_DECODE: begin
           if (i_tok >= start_len || out_idx >= MAX_DATA) begin
-            // fall through to COMMIT next
+            // fall through to COMMIT
           end else begin
-            // prepare to emit current token's bytes
             j_emit <= 3'd0;
           end
         end
 
         S_EMIT: begin
           if (j_emit < exp_len && out_idx < MAX_DATA) begin
-            // Write one byte into work buffer at [out_idx]
-            ascii_work[8*out_idx+:8] <= exp_bytes[8*j_emit+:8];
-            out_idx                  <= out_idx + 1'b1;
-            j_emit                   <= j_emit + 1'b1;
-            ascii_len_work           <= out_idx + 1'b1;  // tracks number of bytes written
+            // Write one byte and its color
+            ascii_work[8*out_idx+:8]   <= exp_bytes[8*j_emit+:8];
+            color_work[16*out_idx+:16] <= tok_color;
+            out_idx                    <= out_idx + 1'b1;
+            j_emit                     <= j_emit + 1'b1;
+            ascii_len_work             <= out_idx + 1'b1;
           end
           if (j_emit >= exp_len || out_idx >= MAX_DATA) begin
-            i_tok <= i_tok + 1'b1;  // next token on next DECODE
+            i_tok <= i_tok + 1'b1;
           end
         end
 
         S_COMMIT: begin
-          // Atomically publish new result at the end
           ascii_buf <= ascii_work;
           ascii_len <= ascii_len_work;
+          color_buf <= color_work;
 
-          // If a new length arrived mid-run, start next cycle; else go idle
           if (pending_start) begin
-            // prepare for the next S_SNAP
             pending_start <= 1'b0;
           end
         end
@@ -555,20 +594,11 @@ module student_input #(
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
 
   localparam [8*16-1:0] KB1_LAYOUT = {
-    "x=C", `BACK_KEY, `TAN_KEY, `COS_KEY, `SIN_KEY, `XOR_KEY, "e&|~", "^.)("
+    "x=C", `BACK_KEY, `TAN_KEY, `COS_KEY, `SIN_KEY, `XOR_KEY, "e&|~", `PI_KEY, ".)("
   };
 
   localparam [8*12-1:0] KB2_LAYOUT = {
-    "x=C",
-    `BACK_KEY,
-    `CEIL_KEY,
-    `FLOOR_KEY,
-    `ROUND_KEY,
-    `PI_KEY,
-    `SQRT_KEY,
-    `ABS_KEY,
-    `LOG_KEY,
-    `LN_KEY
+    "x=C", `BACK_KEY, `CEIL_KEY, `FLOOR_KEY, `ROUND_KEY, `SQRT_KEY, `ABS_KEY, `LN_KEY, ")("
   };
 
   wire [8*MAX_DATA-1:0] buffer_flat;
@@ -636,8 +666,10 @@ module student_input #(
       .debug_req_count(debug_req_count)
   );
 
-  wire [8*MAX_DATA-1:0] display_buf;
-  wire [           7:0] display_len;
+  wire [ 8*MAX_DATA-1:0] display_buf;
+  wire [            7:0] display_len;
+  wire [16*MAX_DATA-1:0] display_color;
+
   token_to_ascii_decoder #(
       .MAX_DATA(MAX_DATA)
   ) decoder (
@@ -646,7 +678,8 @@ module student_input #(
       .token_buf(buffer_flat),
       .token_len(buffer_len8),
       .ascii_buf(display_buf),
-      .ascii_len(display_len)
+      .ascii_len(display_len),
+      .color_buf(display_color)
   );
 
   text_oled #(
@@ -657,7 +690,8 @@ module student_input #(
       .rst(rst),
       .oled_out(oled_text_out),
       .text_len(display_len),
-      .text_bus(display_buf)
+      .text_bus(display_buf),
+      .color_bus(display_color)
   );
 
   assign debug_led[15]   = graph_mode;
