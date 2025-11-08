@@ -80,19 +80,14 @@ endmodule
 
 module math_floor_q16 (
     input  wire               clk,
-    rst,
-    start,
-    input  wire signed [31:0] a,
-    output reg signed  [31:0] y,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // Q16.16
+    output reg signed  [31:0] y,      // Q16.16
     output reg                ready,
     output reg         [ 7:0] err
 );
-  localparam signed [31:0] Q16_MAX = 32'h7FFF_FFFF;
-  localparam signed [31:0] Q16_MIN = 32'h8000_0000;
-
-  wire signed [31:0] ai = {a[31:16], 16'h0000};
-  wire frac_nz = |a[15:0];
-  wire at_min = (ai == Q16_MIN);
+  wire signed [31:0] base = {a[31:16], 16'h0000};
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -102,19 +97,9 @@ module math_floor_q16 (
     end else begin
       ready <= 1'b0;
       if (start) begin
-        if (a[31] && frac_nz) begin
-          if (at_min) begin
-            y   <= Q16_MIN;
-            err <= 8'h20;
-          end else begin
-            y   <= ai - 32'sh0001_0000;
-            err <= 8'd0;
-          end
-        end else begin
-          y   <= ai;
-          err <= 8'd0;
-        end
-        ready <= 1'b1;
+        y    <= base;
+        err  <= 8'd0;
+        ready<= 1'b1;
       end
     end
   end
@@ -122,18 +107,20 @@ endmodule
 
 module math_ceil_q16 (
     input  wire               clk,
-    rst,
-    start,
-    input  wire signed [31:0] a,
-    output reg signed  [31:0] y,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // Q16.16
+    output reg signed  [31:0] y,      // Q16.16
     output reg                ready,
     output reg         [ 7:0] err
 );
-  localparam signed [31:0] Q16_MAX = 32'h7FFF_FFFF;
+  localparam signed [31:0] Q16_MAX = 32'sh7FFF_FFFF;
 
-  wire signed [31:0] ai = {a[31:16], 16'h0000};
-  wire frac_nz = |a[15:0];
-  wire at_maxi = (ai == 32'sh7FFF_0000);
+  wire signed [31:0] base = {a[31:16], 16'h0000};  // floor(a)
+  wire               frac_nz = |a[15:0];
+  wire               will_ov = (!a[31]) && frac_nz && (base == 32'sh7FFF_0000);
+
+  wire signed [31:0] ceil_val = will_ov ? Q16_MAX : (base + (frac_nz ? 32'sh0001_0000 : 32'sh0));
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -143,19 +130,9 @@ module math_ceil_q16 (
     end else begin
       ready <= 1'b0;
       if (start) begin
-        if (!a[31] && frac_nz) begin
-          if (at_maxi) begin
-            y   <= Q16_MAX;
-            err <= 8'h20;
-          end else begin
-            y   <= ai + 32'sh0001_0000;
-            err <= 8'd0;
-          end
-        end else begin
-          y   <= ai;
-          err <= 8'd0;
-        end
-        ready <= 1'b1;
+        y    <= ceil_val;
+        err  <= will_ov ? 8'h20 : 8'd0;
+        ready<= 1'b1;
       end
     end
   end
@@ -163,22 +140,37 @@ endmodule
 
 module math_round_q16 (
     input  wire               clk,
-    rst,
-    start,
-    input  wire signed [31:0] a,
-    output reg signed  [31:0] y,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // Q16.16
+    output reg signed  [31:0] y,      // Q16.16
     output reg                ready,
     output reg         [ 7:0] err
 );
-  localparam signed [31:0] Q16_MAX = 32'h7FFF_FFFF;
-  localparam signed [31:0] Q16_MIN = 32'h8000_0000;
+  localparam signed [31:0] Q16_MAX = 32'sh7FFF_FFFF;
+  localparam signed [31:0] Q16_MIN = 32'sh8000_0000;
 
-  wire signed [31:0] bias = a[31] ? -32'sh0000_8000 : 32'sh0000_8000;
-  wire signed [32:0] sum = a + bias;
-  wire ov_pos = (!a[31]) && (sum[32] != sum[31] || sum[31:0] > Q16_MAX);
-  wire ov_neg = (a[31]) && (sum[32] != sum[31] || sum[31:0] < Q16_MIN);
-  wire any_ov = ov_pos || ov_neg;
-  wire signed [31:0] rounded = {sum[31:16], 16'h0000};
+  // ±0.5 in Q16.16
+  wire signed [31:0] half = 32'sh0000_8000;
+  // Bias toward away-from-zero
+  wire signed [31:0] biased = a + (a[31] ? -half : half);
+
+  // Saturation check on bias add (33-bit to detect overflow cleanly)
+  wire signed [32:0] s33 = {a[31], a} + {(a[31] ? 1'b1 : 1'b0), 32'sh0000_8000};
+  wire               ov_add = (s33[32] != s33[31]);  // sign changed unexpectedly
+
+  // Truncate toward zero:
+  wire               frac_nz_b = |biased[15:0];
+  wire signed [31:0] base_b = {biased[31:16], 16'h0000};  // floor(biased)
+  wire signed [31:0] trunc0_b = (biased[31] && frac_nz_b) ? (base_b + 32'sh0001_0000) : base_b;
+
+  // Final saturation after truncation (only possible if add overflowed)
+  wire signed [31:0] y_raw = trunc0_b;
+  wire               sat_hi = ov_add && !a[31];
+  wire               sat_lo = ov_add && a[31];
+
+  wire signed [31:0] y_sat = sat_hi ? Q16_MAX : (sat_lo ? Q16_MIN : y_raw);
+  wire        [ 7:0] e_sat = (sat_hi || sat_lo) ? 8'h20 : 8'd0;
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -188,14 +180,9 @@ module math_round_q16 (
     end else begin
       ready <= 1'b0;
       if (start) begin
-        if (any_ov) begin
-          y   <= a[31] ? Q16_MIN : Q16_MAX;
-          err <= 8'h20;
-        end else begin
-          y   <= rounded;
-          err <= 8'd0;
-        end
-        ready <= 1'b1;
+        y    <= y_sat;
+        err  <= e_sat;
+        ready<= 1'b1;
       end
     end
   end
