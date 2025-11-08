@@ -555,12 +555,11 @@ module student_input #(
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
 
   localparam [8*16-1:0] KB1_LAYOUT = {
-    `TAN_KEY, `COS_KEY, "C", `BACK_KEY, `SIN_KEY, "><x", `XOR_KEY, "&|~", ".)(^"
+    "x=C", `BACK_KEY, `TAN_KEY, `COS_KEY, `SIN_KEY, `XOR_KEY, "e&|~", "^.)("
   };
 
   localparam [8*12-1:0] KB2_LAYOUT = {
-    "x",
-    "C",
+    "x=C",
     `BACK_KEY,
     `CEIL_KEY,
     `FLOOR_KEY,
@@ -568,9 +567,8 @@ module student_input #(
     `PI_KEY,
     `SQRT_KEY,
     `ABS_KEY,
-    "e",
-    `LN_KEY,
-    `LOG_KEY
+    `LOG_KEY,
+    `LN_KEY
   };
 
   wire [8*MAX_DATA-1:0] buffer_flat;

@@ -240,7 +240,7 @@ module shunting_yard #(
             `OP_AND: op_info = {2'd2,3'd0,1'b0};
             `OP_OR : op_info = {2'd2,3'd0,1'b0};
             `OP_XOR: op_info = {2'd2,3'd0,1'b0};
-            `OP_POW: op_info = {2'd2,3'd3,1'b1}; // right-assoc power
+            `OP_POW: op_info = {2'd2,3'd3,1'b0}; // right-assoc power
             default: op_info = {2'd1,3'd4,1'b1}; // unary (incl. OP_UN_NEG) & functions: highest, right-assoc
         endcase
     end endfunction

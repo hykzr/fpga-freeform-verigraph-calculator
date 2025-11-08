@@ -570,39 +570,41 @@ module math_pow_q16 (
     input  wire               start,
     input  wire signed [31:0] a,      // Q16.16 base
     input  wire signed [31:0] b,      // Q16.16 exponent
-    output reg signed  [31:0] y,      // Q16.16
+    output reg signed  [31:0] y,      // Q16.16 result
     output reg                ready,
     output reg         [ 7:0] err
 );
-  // constants
-  reg signed [31:0] Q_ZERO, Q_ONE, Q_NEGONE;
-  initial begin
-    Q_ZERO   = 32'sh0000_0000;
-    Q_ONE    = 32'sh0001_0000;
-    Q_NEGONE = 32'shFFFF_0000;
-  end
 
-  // states
-  reg [2:0]
-      S_IDLE, S_CHECK, S_LN_START, S_LN_WAIT, S_MUL_1, S_MUL_2, S_EXP_START, S_EXP_WAIT, S_DONE;
-  initial begin
-    S_IDLE = 3'd0;
-    S_CHECK = 3'd1;
-    S_LN_START = 3'd2;
-    S_LN_WAIT = 3'd3;
-    S_MUL_1 = 3'd4;
-    S_MUL_2 = 3'd5;
-    S_EXP_START = 3'd6;
-    S_EXP_WAIT = 3'd7;
-    S_DONE = 3'd0;
-  end
-  reg [2:0] state;
+  // ---------------- Q16.16 constants ----------------
+  localparam signed [31:0] Q_ZERO = 32'sh0000_0000;  // 0.0
+  localparam signed [31:0] Q_ONE = 32'sh0001_0000;  // 1.0
+  localparam signed [31:0] Q_NEGONE = 32'shFFFF_0000;  // -1.0
 
-  // datapath
-  reg signed [31:0] a_abs;
-  reg a_is_neg, b_is_int, b_is_odd, neg_result;
+  // ---------------- FSM states ----------------
+  localparam [2:0]
+        S_IDLE      = 3'd0,
+        S_CHECK     = 3'd1,
+        S_LN_START  = 3'd2,
+        S_LN_WAIT   = 3'd3,
+        S_MUL       = 3'd4,
+        S_EXP_START = 3'd5,
+        S_EXP_WAIT  = 3'd6;
 
-  // ln
+  reg         [ 2:0] state;
+
+  // ---------------- Helper flags (combinational) ----------------
+  wire               b_is_int_w = (b[15:0] == 16'h0000);  // fractional part zero
+  wire               b_is_odd_w = b_is_int_w && b[16];  // integer part LSB = 1
+  wire               a_is_neg_w = a[31];
+  wire signed [31:0] a_abs_w = a_is_neg_w ? -a : a;  // |a|
+  wire               neg_result_w = a_is_neg_w && b_is_odd_w;  // sign of final result
+
+  // ---------------- Latched control ----------------
+  reg                neg_result_reg;  // sign of result for negative base & odd integer exponent
+  reg         [ 7:0] err_acc;  // accumulate domain/overflow/underflow from ln & exp
+  reg         [ 7:0] err_next;  // helper for final error combination
+
+  // ---------------- ln submodule interface ----------------
   reg                ln_start;
   reg signed  [31:0] ln_in_q;
   wire signed [31:0] ln_out_q;
@@ -610,160 +612,202 @@ module math_pow_q16 (
   wire        [ 7:0] ln_err;
   reg signed  [31:0] ln_result;
 
-  // exp
+  // ---------------- exp submodule interface ----------------
   reg                exp_start;
   reg signed  [31:0] exp_in_q;
   wire signed [31:0] exp_out_q;
   wire               exp_ready;
   wire        [ 7:0] exp_err;
 
-  // b*ln(|a|)
-  reg signed  [63:0] mul64;
-  reg signed  [31:0] bln_q16;
-  reg signed [63:0] ROUND16_POS, ROUND16_NEG;
+  // ---------------- b * ln(|a|) datapath ----------------
+  reg signed  [63:0] mul64;  // Q32.32 intermediate for b * ln(|a|)
+  // rounding constants for >> 16
+  localparam signed [63:0] ROUND16_POS = 64'sh0000_0000_0000_8000;
+  localparam signed [63:0] ROUND16_NEG = -64'sh0000_0000_0000_8000;
 
-  reg [7:0] err_acc;
-
-  initial begin
-    ROUND16_POS = 64'sh0000_0000_0000_8000;  // +0.5 ulp for >>>16 rounding
-    ROUND16_NEG = -64'sh0000_0000_0000_8000;
-  end
-
+  // ---------------- Instantiate ln & exp ----------------
   math_ln_q16 u_ln (
-      .clk(clk),
-      .rst(rst),
+      .clk  (clk),
+      .rst  (rst),
       .start(ln_start),
-      .a(ln_in_q),
-      .y(ln_out_q),
+      .a    (ln_in_q),
+      .y    (ln_out_q),
       .ready(ln_ready),
-      .err(ln_err)
+      .err  (ln_err)
   );
 
   math_exp_q16 u_exp (
-      .clk(clk),
-      .rst(rst),
+      .clk  (clk),
+      .rst  (rst),
       .start(exp_start),
-      .a(exp_in_q),
-      .y(exp_out_q),
+      .a    (exp_in_q),
+      .y    (exp_out_q),
       .ready(exp_ready),
-      .err(exp_err)
+      .err  (exp_err)
   );
 
+  // ---------------- Main sequential logic ----------------
   always @(posedge clk or posedge rst) begin
     if (rst) begin
-      state <= S_IDLE;
-      y <= 32'sd0;
-      ready <= 1'b0;
-      err <= 8'd0;
-      a_abs <= 32'sd0;
-      a_is_neg <= 1'b0;
-      b_is_int <= 1'b0;
-      b_is_odd <= 1'b0;
-      neg_result <= 1'b0;
-      ln_start <= 1'b0;
-      ln_in_q <= 32'sd0;
-      ln_result <= 32'sd0;
-      exp_start <= 1'b0;
-      exp_in_q <= 32'sd0;
-      mul64 <= 64'sd0;
-      bln_q16 <= 32'sd0;
-      err_acc <= 8'd0;
+      state          <= S_IDLE;
+      y              <= 32'sd0;
+      ready          <= 1'b0;
+      err            <= 8'd0;
+
+      ln_start       <= 1'b0;
+      ln_in_q        <= 32'sd0;
+      ln_result      <= 32'sd0;
+
+      exp_start      <= 1'b0;
+      exp_in_q       <= 32'sd0;
+
+      mul64          <= 64'sd0;
+
+      err_acc        <= 8'd0;
+      err_next       <= 8'd0;
+      neg_result_reg <= 1'b0;
+
     end else begin
-      ready <= 1'b0;
-      ln_start <= 1'b0;
+      // default strobes low
+      ready     <= 1'b0;
+      ln_start  <= 1'b0;
       exp_start <= 1'b0;
 
       case (state)
-        S_IDLE:
-        if (start) begin
-          err_acc <= 8'd0;
-          y <= 32'sd0;
-          state <= S_CHECK;
-        end
-
-        S_CHECK: begin
-          a_is_neg   <= a[31];
-          a_abs      <= (a[31] ? -a : a);
-          b_is_int   <= (b[15:0] == 16'h0000);
-          b_is_odd   <= (b[15:0] == 16'h0000) && b[16];
-          neg_result <= a[31] && (b[15:0] == 16'h0000) && b[16];
-
-          if (a == Q_ZERO && (b == Q_ZERO || b[31])) begin
-            y <= 32'sd0;
-            err <= 8'b0000_0001;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else if (a == Q_ZERO && !b[31] && b != Q_ZERO) begin
-            y <= 32'sd0;
-            err <= 8'd0;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else if (b == Q_ONE - Q_ZERO) begin
-            y <= Q_ONE;
-            err <= 8'd0;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else if (a == Q_ONE) begin
-            y <= Q_ONE;
-            err <= 8'd0;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else if (a == Q_NEGONE && b_is_int) begin
-            y <= (b_is_odd ? Q_NEGONE : Q_ONE);
-            err <= 8'd0;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else if (a[31] && !b_is_int) begin
-            y <= 32'sd0;
-            err <= 8'b0000_0001;
-            ready <= 1'b1;
-            state <= S_IDLE;
-          end else begin
-            ln_in_q  <= (a[31] ? -a : a);
-            ln_start <= 1'b1;
-            state    <= S_LN_START;
+        // -------------------------------------------------
+        // IDLE: wait for start
+        // -------------------------------------------------
+        S_IDLE: begin
+          if (start) begin
+            err_acc        <= 8'd0;
+            neg_result_reg <= 1'b0;
+            y              <= 32'sd0;
+            err            <= 8'd0;
+            state          <= S_CHECK;
           end
         end
 
-        S_LN_START: state <= S_LN_WAIT;
+        // -------------------------------------------------
+        // S_CHECK: handle special / domain cases
+        // -------------------------------------------------
+        S_CHECK: begin
+          // 0^0 or 0^negative -> domain error
+          if (a == Q_ZERO && (b == Q_ZERO || b[31])) begin
+            y    <= 32'sd0;
+            err  <= 8'b0000_0001;   // domain
+            ready<= 1'b1;
+            state<= S_IDLE;
 
-        S_LN_WAIT:
-        if (ln_ready) begin
-          ln_result <= ln_out_q;
-          if (ln_err != 8'd0) err_acc <= err_acc | 8'b0000_1000 | (ln_err & 8'b0000_0111);
-          state <= S_MUL_1;
+            // 0^positive -> 0 (no error)
+          end else if (a == Q_ZERO && !b[31] && b != Q_ZERO) begin
+            y    <= 32'sd0;
+            err  <= 8'd0;
+            ready<= 1'b1;
+            state<= S_IDLE;
+
+            // a^0 = 1 for any non-zero a
+          end else if (b == Q_ZERO) begin
+            y    <= Q_ONE;
+            err  <= 8'd0;
+            ready<= 1'b1;
+            state<= S_IDLE;
+
+            // 1^b = 1 for any b
+          end else if (a == Q_ONE) begin
+            y    <= Q_ONE;
+            err  <= 8'd0;
+            ready<= 1'b1;
+            state<= S_IDLE;
+
+            // negative base with non-integer exponent -> domain error
+          end else if (a_is_neg_w && !b_is_int_w) begin
+            y    <= 32'sd0;
+            err  <= 8'b0000_0001;   // domain
+            ready<= 1'b1;
+            state<= S_IDLE;
+
+            // general case: use exp(b * ln(|a|)), with sign correction
+          end else begin
+            neg_result_reg <= neg_result_w;  // latch sign for negative base & odd integer exponent
+            ln_in_q        <= a_abs_w;  // ln(|a|)
+            ln_start       <= 1'b1;  // 1-cycle pulse
+            state          <= S_LN_START;
+          end
         end
 
-        // b * ln(|a|)
-        S_MUL_1: begin
-          mul64 <= $signed(b) * $signed(ln_result);  // Q32.32
-          state <= S_MUL_2;
+        // -------------------------------------------------
+        // S_LN_START: give ln a cycle with start pulse
+        // -------------------------------------------------
+        S_LN_START: begin
+          state <= S_LN_WAIT;
         end
-        S_MUL_2: begin
-          bln_q16   <= $signed((mul64 + (mul64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
-          exp_in_q  <= $signed((mul64 + (mul64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
+
+        // -------------------------------------------------
+        // S_LN_WAIT: wait for ln ready, capture result
+        // -------------------------------------------------
+        S_LN_WAIT: begin
+          if (ln_ready) begin
+            ln_result <= ln_out_q;
+
+            // propagate only domain/overflow/underflow (bits 0?2) from ln
+            if (ln_err[0] | ln_err[1] | ln_err[2]) err_acc <= err_acc | (ln_err & 8'b0000_0111);
+
+            state <= S_MUL;
+          end
+        end
+
+        // -------------------------------------------------
+        // S_MUL: compute b * ln(|a|) in Q32.32
+        // -------------------------------------------------
+        S_MUL: begin
+          mul64 <= $signed(b) * $signed(ln_result);  // Q16.16 * Q16.16 = Q32.32
+          state <= S_EXP_START;
+        end
+
+        // -------------------------------------------------
+        // S_EXP_START: round & shift to Q16.16, start exp
+        // -------------------------------------------------
+        S_EXP_START: begin
+          // round-to-nearest for >>16, handle sign
+          if (mul64[63] == 1'b0) begin
+            exp_in_q <= $signed((mul64 + ROUND16_POS) >>> 16);
+          end else begin
+            exp_in_q <= $signed((mul64 + ROUND16_NEG) >>> 16);
+          end
+
           exp_start <= 1'b1;
-          state     <= S_EXP_START;
+          state     <= S_EXP_WAIT;
         end
 
-        S_EXP_START: state <= S_EXP_WAIT;
+        // -------------------------------------------------
+        // S_EXP_WAIT: wait for exp ready, apply sign, combine errors
+        // -------------------------------------------------
+        S_EXP_WAIT: begin
+          if (exp_ready) begin
+            // combine previous ln errors with exp errors (domain/ovf/uf only)
+            err_next = err_acc;
+            if (exp_err[0] | exp_err[1] | exp_err[2])
+              err_next = err_next | (exp_err & 8'b0000_0111);
 
-        S_EXP_WAIT:
-        if (exp_ready) begin
-          if (exp_err != 8'd0) err_acc <= err_acc | 8'b0000_1000 | (exp_err & 8'b0000_0111);
-          y <= (neg_result ? -exp_out_q : exp_out_q);
-          err   <= (err_acc |
-                    (exp_err[1] ? 8'b0000_0010 : 8'b0000_0000) |
-                    (exp_err[2] ? 8'b0000_0100 : 8'b0000_0000));
-          ready <= 1'b1;
-          state <= S_DONE;
+            // apply sign correction for negative base & odd integer exponent
+            if (neg_result_reg) y <= -exp_out_q;
+            else y <= exp_out_q;
+
+            err <= err_next;  // user-facing error (no inexact)
+            err_acc <= err_next;  // (not really needed beyond this point)
+
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end
         end
 
-        S_DONE:  state <= S_IDLE;
-        default: state <= S_IDLE;
+        default: begin
+          state <= S_IDLE;
+        end
       endcase
     end
   end
+
 endmodule
 
 
@@ -1732,7 +1776,7 @@ module math_log_q16 (
     input  wire signed [31:0] a,      // Q16.16, must be > 0
     output reg signed  [31:0] y,      // log10(x) in Q16.16
     output wire               ready,  // 1-cycle pulse on completion
-    output wire               err     // sticky (1=any error since last start)
+    output wire        [ 7:0] err     // sticky (8-bit error flags)
 );
 
   // ln(10) in Q16.16
@@ -1763,7 +1807,7 @@ module math_log_q16 (
   reg signed  [31:0] ln_y_hold;
 
   // Sticky error + done pulse
-  reg                err_sticky;
+  reg         [ 7:0] err_sticky;
   reg                done_r;
   assign err   = err_sticky;
   assign ready = done_r;
@@ -1806,7 +1850,7 @@ module math_log_q16 (
       ln_y_hold  <= 32'sd0;
       y          <= 32'sd0;
       done_r     <= 1'b0;
-      err_sticky <= 1'b0;
+      err_sticky <= 8'd0;
     end else begin
       state     <= state_n;
 
@@ -1819,7 +1863,7 @@ module math_log_q16 (
         S_IDLE: begin
           // clear sticky error on a fresh start
           if (start) begin
-            err_sticky <= 1'b0;
+            err_sticky <= 8'd0;
             ln_start   <= 1'b1;  // kick ln
           end
         end
@@ -1831,7 +1875,7 @@ module math_log_q16 (
         S_WAITLN: begin
           if (ln_ready) begin
             // accumulate any ln errors
-            if (|ln_err) err_sticky <= 1'b1;
+            if (|ln_err) err_sticky <= err_sticky | ln_err;
 
             if (ln_domain_err) begin
               // x<=0: stop here, y=0
@@ -1857,7 +1901,7 @@ module math_log_q16 (
         S_WAITDV: begin
           if (div_ready) begin
             y <= div_y;
-            if (|div_err) err_sticky <= 1'b1;
+            if (|div_err) err_sticky <= err_sticky | div_err;
           end
         end
 
