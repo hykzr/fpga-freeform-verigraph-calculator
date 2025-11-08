@@ -255,6 +255,7 @@ module scroll_page_ctrl (
     input wire rst,
     input wire [3:0] mouse_z,
     input wire [1:0] num_pages,
+    input wire mouse_active,
     output reg [1:0] page_sel
 );
   reg [3:0] last_z;
@@ -267,7 +268,7 @@ module scroll_page_ctrl (
     if (rst) begin
       page_sel <= 2'd0;
       last_z   <= 4'd0;
-    end else begin
+    end else if (mouse_active) begin
       last_z <= mouse_z;
       if (z_scroll_up && (page_sel < num_pages)) begin
         page_sel <= page_sel + 2'd1;
@@ -323,6 +324,7 @@ module input_core #(
       .clk(clk),
       .rst(rst),
       .mouse_z(mouse_z),
+      .mouse_active(mouse_active),
       .num_pages(2'd2),
       .page_sel(kb_sel)
   );
@@ -553,17 +555,17 @@ module student_input #(
   localparam [8*16-1:0] KB0_LAYOUT = {"/=0C", "*987", "-654", "+321"};
 
   localparam [8*16-1:0] KB1_LAYOUT = {
-    `TAN_KEY, `COS_KEY, `SIN_KEY, `BACK_KEY, "><x", `PI_KEY, `XOR_KEY, "&|~", ".)(^"
+    `TAN_KEY, `COS_KEY, "C", `BACK_KEY, `SIN_KEY, "><x", `XOR_KEY, "&|~", ".)(^"
   };
 
   localparam [8*12-1:0] KB2_LAYOUT = {
+    "x",
+    "C",
+    `BACK_KEY,
     `CEIL_KEY,
     `FLOOR_KEY,
-    `BACK_KEY,
     `ROUND_KEY,
-    `MAX_KEY,
-    `MIN_KEY,
-    ",",
+    `PI_KEY,
     `SQRT_KEY,
     `ABS_KEY,
     "e",

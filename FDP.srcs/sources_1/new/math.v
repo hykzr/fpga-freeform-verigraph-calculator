@@ -149,28 +149,24 @@ module math_round_q16 (
 );
   localparam signed [31:0] Q16_MAX = 32'sh7FFF_FFFF;
   localparam signed [31:0] Q16_MIN = 32'sh8000_0000;
+  localparam signed [31:0] HALF = 32'sh0000_8000;  // +0.5 in Q16.16
 
-  // ±0.5 in Q16.16
-  wire signed [31:0] half = 32'sh0000_8000;
-  // Bias toward away-from-zero
-  wire signed [31:0] biased = a + (a[31] ? -half : half);
+  // Bias away from zero
+  wire signed [31:0] bias = a[31] ? -HALF : HALF;
 
-  // Saturation check on bias add (33-bit to detect overflow cleanly)
-  wire signed [32:0] s33 = {a[31], a} + {(a[31] ? 1'b1 : 1'b0), 32'sh0000_8000};
-  wire               ov_add = (s33[32] != s33[31]);  // sign changed unexpectedly
+  // 32-bit signed add and overflow detection (same-sign add flips sign)
+  wire signed [31:0] sum = a + bias;
+  wire ov_add = ((a[31] == bias[31]) && (sum[31] != a[31]));
 
-  // Truncate toward zero:
-  wire               frac_nz_b = |biased[15:0];
-  wire signed [31:0] base_b = {biased[31:16], 16'h0000};  // floor(biased)
-  wire signed [31:0] trunc0_b = (biased[31] && frac_nz_b) ? (base_b + 32'sh0001_0000) : base_b;
+  // Truncate toward zero
+  wire frac_nz = |sum[15:0];
+  wire signed [31:0] base = {sum[31:16], 16'h0000};  // floor(sum)
+  wire signed [31:0] trunc0 = (sum[31] && frac_nz) ? (base + 32'sh0001_0000)  // bump toward 0
+  : base;
 
-  // Final saturation after truncation (only possible if add overflowed)
-  wire signed [31:0] y_raw = trunc0_b;
-  wire               sat_hi = ov_add && !a[31];
-  wire               sat_lo = ov_add && a[31];
-
-  wire signed [31:0] y_sat = sat_hi ? Q16_MAX : (sat_lo ? Q16_MIN : y_raw);
-  wire        [ 7:0] e_sat = (sat_hi || sat_lo) ? 8'h20 : 8'd0;
+  // Saturate only on true overflow
+  wire signed [31:0] y_next = ov_add ? (a[31] ? Q16_MIN : Q16_MAX) : trunc0;
+  wire [7:0] e_next = ov_add ? 8'h20 : 8'd0;
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
@@ -180,8 +176,8 @@ module math_round_q16 (
     end else begin
       ready <= 1'b0;
       if (start) begin
-        y    <= y_sat;
-        err  <= e_sat;
+        y    <= y_next;
+        err  <= e_next;
         ready<= 1'b1;
       end
     end
@@ -569,85 +565,436 @@ module math_div_q16 (
 endmodule
 
 module math_pow_q16 (
-    input wire clk,
-    rst,
-    start,
-    input wire signed [31:0] a,
-    b,
-    output reg signed [31:0] y,
-    output reg ready,
-    output reg [7:0] err
+    input  wire               clk,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // Q16.16 base
+    input  wire signed [31:0] b,      // Q16.16 exponent
+    output reg signed  [31:0] y,      // Q16.16
+    output reg                ready,
+    output reg         [ 7:0] err
 );
-  reg [5:0] state;
-  reg signed [63:0] result;
-  reg signed [31:0] base;
-  reg signed [31:0] exp_remaining;
-  reg exp_negative;
-  reg signed [63:0] temp_result;
+  // constants
+  reg signed [31:0] Q_ZERO, Q_ONE, Q_NEGONE;
+  initial begin
+    Q_ZERO   = 32'sh0000_0000;
+    Q_ONE    = 32'sh0001_0000;
+    Q_NEGONE = 32'shFFFF_0000;
+  end
+
+  // states
+  reg [2:0]
+      S_IDLE, S_CHECK, S_LN_START, S_LN_WAIT, S_MUL_1, S_MUL_2, S_EXP_START, S_EXP_WAIT, S_DONE;
+  initial begin
+    S_IDLE = 3'd0;
+    S_CHECK = 3'd1;
+    S_LN_START = 3'd2;
+    S_LN_WAIT = 3'd3;
+    S_MUL_1 = 3'd4;
+    S_MUL_2 = 3'd5;
+    S_EXP_START = 3'd6;
+    S_EXP_WAIT = 3'd7;
+    S_DONE = 3'd0;
+  end
+  reg [2:0] state;
+
+  // datapath
+  reg signed [31:0] a_abs;
+  reg a_is_neg, b_is_int, b_is_odd, neg_result;
+
+  // ln
+  reg                ln_start;
+  reg signed  [31:0] ln_in_q;
+  wire signed [31:0] ln_out_q;
+  wire               ln_ready;
+  wire        [ 7:0] ln_err;
+  reg signed  [31:0] ln_result;
+
+  // exp
+  reg                exp_start;
+  reg signed  [31:0] exp_in_q;
+  wire signed [31:0] exp_out_q;
+  wire               exp_ready;
+  wire        [ 7:0] exp_err;
+
+  // b*ln(|a|)
+  reg signed  [63:0] mul64;
+  reg signed  [31:0] bln_q16;
+  reg signed [63:0] ROUND16_POS, ROUND16_NEG;
+
+  reg [7:0] err_acc;
+
+  initial begin
+    ROUND16_POS = 64'sh0000_0000_0000_8000;  // +0.5 ulp for >>>16 rounding
+    ROUND16_NEG = -64'sh0000_0000_0000_8000;
+  end
+
+  math_ln_q16 u_ln (
+      .clk(clk),
+      .rst(rst),
+      .start(ln_start),
+      .a(ln_in_q),
+      .y(ln_out_q),
+      .ready(ln_ready),
+      .err(ln_err)
+  );
+
+  math_exp_q16 u_exp (
+      .clk(clk),
+      .rst(rst),
+      .start(exp_start),
+      .a(exp_in_q),
+      .y(exp_out_q),
+      .ready(exp_ready),
+      .err(exp_err)
+  );
 
   always @(posedge clk or posedge rst) begin
     if (rst) begin
+      state <= S_IDLE;
       y <= 32'sd0;
       ready <= 1'b0;
       err <= 8'd0;
-      state <= 6'd0;
-      result <= 64'sd0;
-      base <= 32'sd0;
-      exp_remaining <= 32'sd0;
-      exp_negative <= 1'b0;
-      temp_result <= 64'sd0;
+      a_abs <= 32'sd0;
+      a_is_neg <= 1'b0;
+      b_is_int <= 1'b0;
+      b_is_odd <= 1'b0;
+      neg_result <= 1'b0;
+      ln_start <= 1'b0;
+      ln_in_q <= 32'sd0;
+      ln_result <= 32'sd0;
+      exp_start <= 1'b0;
+      exp_in_q <= 32'sd0;
+      mul64 <= 64'sd0;
+      bln_q16 <= 32'sd0;
+      err_acc <= 8'd0;
     end else begin
+      ready <= 1'b0;
+      ln_start <= 1'b0;
+      exp_start <= 1'b0;
+
       case (state)
-        6'd0: begin
-          ready <= 1'b0;
-          if (start) begin
-            if (b == 32'sd0) begin
-              y <= 32'sd65536;
-              err <= 8'd0;
-              ready <= 1'b1;
-              state <= 6'd0;
-            end else begin
-              base <= a;
-              if (b < 0) begin
-                exp_remaining <= -b;
-                exp_negative  <= 1'b1;
-              end else begin
-                exp_remaining <= b;
-                exp_negative  <= 1'b0;
-              end
-              result <= 64'sd65536;
-              state  <= 6'd1;
-            end
+        S_IDLE:
+        if (start) begin
+          err_acc <= 8'd0;
+          y <= 32'sd0;
+          state <= S_CHECK;
+        end
+
+        S_CHECK: begin
+          a_is_neg   <= a[31];
+          a_abs      <= (a[31] ? -a : a);
+          b_is_int   <= (b[15:0] == 16'h0000);
+          b_is_odd   <= (b[15:0] == 16'h0000) && b[16];
+          neg_result <= a[31] && (b[15:0] == 16'h0000) && b[16];
+
+          if (a == Q_ZERO && (b == Q_ZERO || b[31])) begin
+            y <= 32'sd0;
+            err <= 8'b0000_0001;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else if (a == Q_ZERO && !b[31] && b != Q_ZERO) begin
+            y <= 32'sd0;
+            err <= 8'd0;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else if (b == Q_ONE - Q_ZERO) begin
+            y <= Q_ONE;
+            err <= 8'd0;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else if (a == Q_ONE) begin
+            y <= Q_ONE;
+            err <= 8'd0;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else if (a == Q_NEGONE && b_is_int) begin
+            y <= (b_is_odd ? Q_NEGONE : Q_ONE);
+            err <= 8'd0;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else if (a[31] && !b_is_int) begin
+            y <= 32'sd0;
+            err <= 8'b0000_0001;
+            ready <= 1'b1;
+            state <= S_IDLE;
+          end else begin
+            ln_in_q  <= (a[31] ? -a : a);
+            ln_start <= 1'b1;
+            state    <= S_LN_START;
           end
         end
-        6'd1: begin
-          if (exp_remaining <= 32'sd0) begin
-            if (exp_negative) begin
-              if (result[31:0] == 32'sd0) begin
-                y   <= 32'sd0;
-                err <= 8'd1;
-              end else begin
-                temp_result <= {32'sd65536, 16'd0} / result[31:0];
-                state <= 6'd2;
-              end
+
+        S_LN_START: state <= S_LN_WAIT;
+
+        S_LN_WAIT:
+        if (ln_ready) begin
+          ln_result <= ln_out_q;
+          if (ln_err != 8'd0) err_acc <= err_acc | 8'b0000_1000 | (ln_err & 8'b0000_0111);
+          state <= S_MUL_1;
+        end
+
+        // b * ln(|a|)
+        S_MUL_1: begin
+          mul64 <= $signed(b) * $signed(ln_result);  // Q32.32
+          state <= S_MUL_2;
+        end
+        S_MUL_2: begin
+          bln_q16   <= $signed((mul64 + (mul64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
+          exp_in_q  <= $signed((mul64 + (mul64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
+          exp_start <= 1'b1;
+          state     <= S_EXP_START;
+        end
+
+        S_EXP_START: state <= S_EXP_WAIT;
+
+        S_EXP_WAIT:
+        if (exp_ready) begin
+          if (exp_err != 8'd0) err_acc <= err_acc | 8'b0000_1000 | (exp_err & 8'b0000_0111);
+          y <= (neg_result ? -exp_out_q : exp_out_q);
+          err   <= (err_acc |
+                    (exp_err[1] ? 8'b0000_0010 : 8'b0000_0000) |
+                    (exp_err[2] ? 8'b0000_0100 : 8'b0000_0000));
+          ready <= 1'b1;
+          state <= S_DONE;
+        end
+
+        S_DONE:  state <= S_IDLE;
+        default: state <= S_IDLE;
+      endcase
+    end
+  end
+endmodule
+
+
+// Q16.16 exponential: y = exp(x)
+// Handshake: start (pulse) -> ready (1-cycle)
+// Error flags:
+//   [1] OVERFLOW   saturated to +MAX
+//   [2] UNDERFLOW  flushed to 0
+//   [3] INEXACT    rounding/reduction produced discarded bits (approximation)
+//   [7:4],[0] reserved
+// Q16.16 exponential: y = exp(a)
+// Fix: every multiply has a MUL state (compute) and an ACC state (consume).
+// ==============================
+// Q16.16 exponential: y = exp(a)
+// - Every multiply has MUL/ACC phases (no read-after-write hazards).
+// - k/f split into two states so f uses the updated k.
+// - Pure Verilog-2001: no localparam, no declarations inside always.
+// ==============================
+module math_exp_q16 (
+    input  wire               clk,
+    input  wire               rst,
+    input  wire               start,
+    input  wire signed [31:0] a,      // x in Q16.16
+    output reg signed  [31:0] y,      // exp(x) in Q16.16
+    output reg                ready,
+    output reg         [ 7:0] err
+);
+  // constants
+  reg signed [31:0] Q_ZERO, Q_ONE, Q_MAX, Q_MIN, LN2_Q16, INV_LN2_Q16, HALF_Q16;
+  reg signed [31:0] C5, C4, C3, C2;
+  reg signed [63:0] QMAX_64, QMIN_64;
+  reg signed [63:0] ROUND16_POS, ROUND16_NEG;
+  initial begin
+    Q_ZERO      = 32'sh0000_0000;
+    Q_ONE       = 32'sh0001_0000;
+    Q_MAX       = 32'sh7FFF_FFFF;
+    Q_MIN       = 32'sh8000_0000;
+    HALF_Q16    = 32'sh0000_8000;
+    LN2_Q16     = 32'sh0000_B172;  // ln 2
+    INV_LN2_Q16 = 32'sh0001_7154;  // 1/ln 2
+    C5          = 32'sh0000_0222;  // 1/120
+    C4          = 32'sh0000_0AAA;  // 1/24
+    C3          = 32'sh0000_2AAA;  // 1/6
+    C2          = 32'sh0000_8000;  // 1/2
+    QMAX_64     = 64'sh0000_0000_7FFF_FFFF;
+    QMIN_64     = 64'shFFFF_FFFF_8000_0000;
+    ROUND16_POS = 64'sh0000_0000_0000_8000;  // +0.5 ulp for >>>16
+    ROUND16_NEG = -64'sh0000_0000_0000_8000;
+  end
+
+  // states
+  reg [4:0]
+      S_IDLE,
+      S_Y_MUL,
+      S_Y_ACC,
+      S_K_MAKE,
+      S_F_MAKE,
+      S_R_MUL,
+      S_R_ACC,
+      S_H0_MUL,
+      S_H0_ACC,
+      S_H1_MUL,
+      S_H1_ACC,
+      S_H2_MUL,
+      S_H2_ACC,
+      S_H3_MUL,
+      S_H3_ACC,
+      S_H4_MUL,
+      S_H4_ACC,
+      S_SCALE,
+      S_DONE;
+  initial begin
+    S_IDLE   = 5'd0;
+    S_Y_MUL  = 5'd1;
+    S_Y_ACC  = 5'd2;
+    S_K_MAKE = 5'd3;
+    S_F_MAKE = 5'd4;
+    S_R_MUL  = 5'd5;
+    S_R_ACC  = 5'd6;
+    S_H0_MUL = 5'd7;
+    S_H0_ACC = 5'd8;
+    S_H1_MUL = 5'd9;
+    S_H1_ACC = 5'd10;
+    S_H2_MUL = 5'd11;
+    S_H2_ACC = 5'd12;
+    S_H3_MUL = 5'd13;
+    S_H3_ACC = 5'd14;
+    S_H4_MUL = 5'd15;
+    S_H4_ACC = 5'd16;
+    S_SCALE  = 5'd17;
+    S_DONE   = 5'd18;
+  end
+  reg [4:0] state, state_n;
+
+  // datapath
+  reg signed [31:0] x_q, y_q16, y_bias, f_q16, r_q16, t_q16;
+  reg signed [15:0] k_int;
+  reg signed [63:0] prod64;
+  reg overflow, underflow, inexact;
+
+  // next-state
+  always @* begin
+    state_n = state;
+    case (state)
+      S_IDLE:   if (start) state_n = S_Y_MUL;
+      S_Y_MUL:  state_n = S_Y_ACC;
+      S_Y_ACC:  state_n = S_K_MAKE;
+      S_K_MAKE: state_n = S_F_MAKE;
+      S_F_MAKE: state_n = S_R_MUL;
+      S_R_MUL:  state_n = S_R_ACC;
+      S_R_ACC:  state_n = S_H0_MUL;
+      S_H0_MUL: state_n = S_H0_ACC;
+      S_H0_ACC: state_n = S_H1_MUL;
+      S_H1_MUL: state_n = S_H1_ACC;
+      S_H1_ACC: state_n = S_H2_MUL;
+      S_H2_MUL: state_n = S_H2_ACC;
+      S_H2_ACC: state_n = S_H3_MUL;
+      S_H3_MUL: state_n = S_H3_ACC;
+      S_H3_ACC: state_n = S_H4_MUL;
+      S_H4_MUL: state_n = S_H4_ACC;
+      S_H4_ACC: state_n = S_SCALE;
+      S_SCALE:  state_n = S_DONE;
+      S_DONE:   state_n = S_IDLE;
+      default:  state_n = S_IDLE;
+    endcase
+  end
+
+  // sequential
+  always @(posedge clk or posedge rst) begin
+    if (rst) begin
+      state <= S_IDLE;
+      y <= 32'sd0;
+      ready <= 1'b0;
+      err <= 8'd0;
+      x_q <= 32'sd0;
+      y_q16 <= 32'sd0;
+      y_bias <= 32'sd0;
+      f_q16 <= 32'sd0;
+      r_q16 <= 32'sd0;
+      t_q16 <= 32'sd0;
+      k_int <= 16'sd0;
+      prod64 <= 64'sd0;
+      overflow <= 1'b0;
+      underflow <= 1'b0;
+      inexact <= 1'b0;
+    end else begin
+      state <= state_n;
+      ready <= 1'b0;
+
+      case (state)
+        S_IDLE:
+        if (start) begin
+          x_q <= a;
+          err <= 8'd0;
+          overflow <= 1'b0;
+          underflow <= 1'b0;
+          inexact <= 1'b0;
+        end
+
+        // y = a * inv_ln2  (rounded)
+        S_Y_MUL: prod64 <= $signed(x_q) * $signed(INV_LN2_Q16);
+        S_Y_ACC: y_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
+
+        // k = round(y)
+        S_K_MAKE: begin
+          y_bias <= (y_q16[31] ? -HALF_Q16 : HALF_Q16);
+          k_int  <= $signed((y_q16 + y_bias) >>> 16);
+        end
+
+        // f = y - k
+        S_F_MAKE: begin
+          f_q16 <= y_q16 - ({{16{k_int[15]}}, k_int} <<< 16);
+          if (f_q16 != 32'sd0) inexact <= 1'b1;
+        end
+
+        // r = f * ln2  (rounded)
+        S_R_MUL: prod64 <= $signed(f_q16) * $signed(LN2_Q16);
+        S_R_ACC: r_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16);
+
+        // Horner (every >>>16 rounded)
+        S_H0_MUL: prod64 <= $signed(C5) * $signed(r_q16);
+        S_H0_ACC: t_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16) + C4;
+
+        S_H1_MUL: prod64 <= $signed(t_q16) * $signed(r_q16);
+        S_H1_ACC: t_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16) + C3;
+
+        S_H2_MUL: prod64 <= $signed(t_q16) * $signed(r_q16);
+        S_H2_ACC: t_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16) + C2;
+
+        S_H3_MUL: prod64 <= $signed(t_q16) * $signed(r_q16);
+        S_H3_ACC:
+        t_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16) + Q_ONE;
+
+        S_H4_MUL: prod64 <= $signed(t_q16) * $signed(r_q16);
+        S_H4_ACC:
+        t_q16 <= $signed((prod64 + (prod64[63] ? ROUND16_NEG : ROUND16_POS)) >>> 16) + Q_ONE;
+
+        // scale by 2^k (same as before)
+        S_SCALE: begin
+          if (k_int >= 0) begin
+            if (k_int >= 15) begin
+              y <= Q_MAX;
+              overflow <= 1'b1;
             end else begin
-              y <= result[31:0];
-              err <= 8'd0;
-              ready <= 1'b1;
-              state <= 6'd0;
+              prod64 = $signed({{32{t_q16[31]}}, t_q16}) <<< k_int;
+              if (prod64 > QMAX_64) begin
+                y <= Q_MAX;
+                overflow <= 1'b1;
+              end else begin
+                y <= prod64[31:0];
+              end
             end
           end else begin
-            result <= (result * base) >>> 16;
-            exp_remaining <= exp_remaining - 32'sd65536;
+            if (k_int <= -31) begin
+              y <= Q_ZERO;
+              if (t_q16 != 32'sd0) underflow <= 1'b1;
+            end else begin
+              y <= $signed(t_q16) >>> (-k_int);
+              if (y == Q_ZERO && t_q16 != 32'sd0) underflow <= 1'b1;
+            end
           end
         end
-        6'd2: begin
-          y <= temp_result[31:0];
-          err <= 8'd0;
-          ready <= 1'b1;
-          state <= 6'd0;
+
+        S_DONE: begin
+          err[1]   <= overflow;
+          err[2]   <= underflow;
+          err[3]   <= inexact;
+          err[7:4] <= 4'b0000;
+          err[0]   <= 1'b0;
+          ready    <= 1'b1;
         end
-        default: state <= 6'd0;
       endcase
     end
   end

@@ -44,31 +44,31 @@
 `define C_TEXT   16'hFFFF
 `define C_BORDER 16'h0841
 
-`define OP_ADD    4'd0
-`define OP_SUB    4'd1
-`define OP_MUL    4'd2
-`define OP_DIV    4'd3
-`define OP_POW    4'd4
-`define OP_UN_NEG 4'd5
-`define OP_REM    4'd6  // Remainder/modulo
-`define OP_AND    4'd7  // Bitwise AND
-`define OP_OR     4'd8  // Bitwise OR
-`define OP_XOR    4'd9  // Bitwise XOR
+`define OP_ADD    5'd0
+`define OP_SUB    5'd1
+`define OP_MUL    5'd2
+`define OP_DIV    5'd3
+`define OP_POW    5'd4
+`define OP_UN_NEG 5'd5
+`define OP_REM    5'd6  // Remainder/modulo
+`define OP_AND    5'd7  // Bitwise AND
+`define OP_OR     5'd8  // Bitwise OR
+`define OP_XOR    5'd9  // Bitwise XOR
 
-`define FN_SIN    4'd0
-`define FN_COS    4'd1
-`define FN_TAN    4'd2
-`define FN_CEIL   4'd3
-`define FN_FLOOR  4'd4
-`define FN_ROUND  4'd5
-`define FN_SQRT   4'd6
-`define FN_ABS    4'd7
-`define FN_MAX    4'd8
-`define FN_MIN    4'd9
-`define FN_NOT    4'd10
-`define FN_POW    4'd11
-`define FN_LN    4'd12
-`define FN_LOG    4'd13
+`define FN_SIN    5'd10
+`define FN_COS    5'd11
+`define FN_TAN    5'd12
+`define FN_CEIL   5'd13
+`define FN_FLOOR  5'd14
+`define FN_ROUND  5'd15
+`define FN_SQRT   5'd16
+`define FN_ABS    5'd17
+`define FN_MAX    5'd18
+`define FN_MIN    5'd19
+`define FN_NOT    5'd20
+`define FN_POW    5'd21
+`define FN_LN     5'd22
+`define FN_LOG    5'd23
 
 // ---- Input error flags (4 bits) ----
 `define ERR_NONE        8'h00
