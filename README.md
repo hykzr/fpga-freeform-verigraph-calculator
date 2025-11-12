@@ -12,7 +12,7 @@ The calculator comprises three major subsystems:
 
 1. Input subsystem – A keypad containing three pages and text OLED allow expressions to be entered character by character. Buttons are debounced and auto‑repeat is supported. A PS/2 mouse can also click keypad buttons or drag the graph. Mouse scroll switch pages in keypad mode and zoom in/out graph in graph mode. Tokens are colour‑coded (numbers, functions, variables, constants, brackets and operators) for readability and the display automatically expands function keys into their ASCII names.
 
-    | ![](images/keypad1.png) | ![](images/keypad1.png) | ![](images/keypad1.png) |
+    | ![](images/keypad1.png) | ![](images/keypad2.png) | ![](images/keypad3.png) |
     |:-----------------------:|:-----------------------:|:-----------------------:|
     | Keypad 1                | Keypad 2                | Keypad 3                |
 
