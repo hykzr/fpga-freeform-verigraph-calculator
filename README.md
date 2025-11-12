@@ -2,26 +2,27 @@
 
 **Freeform Verigraph Calculator** is a fully‑featured graphing calculator built on the **Basys 3** FPGA board with 3 **OLED**. It combines colour‑coded keypad/text/graphic displays, a responsive PS/2 mouse interface and a powerful fixed‑point math core to evaluate and plot mathematical expressions in real time. The project demonstrates how to implement computation of free‑form input (not just pre‑programmed functions), from automatic parsing, calculating, plotting of expressions with variable `x`, to intuitive graph navigation using verilog on FPGA.
 
+![](images/calculator.jpg)
+
 ## Overview
 
 The calculator comprises three major subsystems:
 
 1. Input subsystem – A keypad containing three pages and text OLED allow expressions to be entered character by character. Buttons are debounced and auto‑repeat is supported. A PS/2 mouse can also click keypad buttons or drag the graph. Mouse scroll switch pages in keypad mode and zoom in/out graph in graph mode. Tokens are colour‑coded (numbers, functions, variables, constants, brackets and operators) for readability and the display automatically expands function keys into their ASCII names.
 
-    - Three keypad pages
-    ![](images/keypad1.png) 
-    ![](images/keypad2.png) 
-    ![](images/keypad3.png)
+    | ![](images/keypad1.png) | ![](images/keypad1.png) | ![](images/keypad1.png) |
+    |:-----------------------:|:-----------------------:|:-----------------------:|
+    | Keypad 1                | Keypad 2                | Keypad 3                |
 
 1. Expression evaluation – Expressions are tokenised and converted from infix to Reverse Polish Notation (RPN) using a shunting‑yard algorithm. The tokenizer automatically inserts missing closing parentheses at the end of an expression and recognises numbers, the variable `x`, `π` and `e`. Once in RPN, a set of Q16.16 fixed‑point math modules evaluate the expression with support for arithmetic, trigonometric, logarithmic, bitwise and power operations.
 
 1. Graph plotter – When `=` is pressed, the system also enters graph mode. It samples the function across the OLED’s width, maps world coordinates to screen pixels and draws axes, unit markers and the curve. A viewport controller handles zooming and panning: zoom in/out multiplies or divides the view and recentres offsets, mouse drags translate the graph, and arrow buttons provide discrete pans. A middle mouse click toggles between keypad and graph control.
 
     - examples
-    ![](images/sinx+x.png)
-    ![](images/sincostanlnsqrtx.png)
-    ![](images/tanx.png)
-    ![](images/tanx_zoomed.png)
+
+    | ![](images/sinx+x.png) | ![](images/sincostanlnsqrtx.png) | ![](images/tanx.png) |
+    |:-----------------------:|:-----------------------:|:-----------------------:|
+    |  |  |  |
 
 All subsystems are integrated by a compute link module that detects whether an expression contains the symbol x and accordingly switches between numeric evaluation and graph evaluation. Pressing = triggers a soft reset of the parser and math modules, ensuring that each computation starts from a clean state.
 
