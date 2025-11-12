@@ -1,5 +1,7 @@
 # Freeform Verigraph Calculator
 
+<video src="https://github.com/user-attachments/assets/7fd493d6-b715-4878-b4e2-78f27777c1eb" controls></video>
+
 **Freeform Verigraph Calculator** is a fully‑featured graphing calculator built on the **Basys 3** FPGA board with 3 **OLED**. It combines colour‑coded keypad/text/graphic displays, a responsive PS/2 mouse interface and a powerful fixed‑point math core to evaluate and plot mathematical expressions in real time. The project demonstrates how to implement computation of free‑form input (not just pre‑programmed functions), from automatic parsing, calculating, plotting of expressions with variable `x`, to intuitive graph navigation using verilog on FPGA.
 
 ![](images/calculator.jpg)
@@ -108,3 +110,17 @@ FDP.srcs/
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details
+
+## References
+
+- **NUS EE2026 project** – The calculator was developed as part of the National University of Singapore’s EE2026 FPGA design project.
+
+- **Imported hardware modules** – Three modules under FDP.srcs/sources_1/imports/Desktop are copied from the official course starter pack and provide low‑level device drivers:
+
+    - `Oled_Display.v` – An SPI driver and controller for the Pmod OLED RGB display. It manages the commands, frame timing and pixel sampling and is adapted from Joel Holdsworth’s open‑source PMOD OLED demonstration.
+
+    - `Mouse_Control.vhd` – A behavioural PS/2 mouse controller written by Digilent. It sequences mouse initialisation, scroll‑wheel enabling and decodes the 3‑byte packets into X/Y movement, wheel movement and button states.
+
+    - `Ps2Interface.vhd` – A generic bidirectional PS/2 interface module used by `Mouse_Control`. It wraps data bytes into PS/2 frames, generates parity, and checks for framing errors.
+
+    These imported modules are used as‑is and should not be modified; they connect directly to the `JA`/`JB`/`JC` Pmod pins and the `PS/2` port.
